@@ -38,8 +38,9 @@ export class AuthService {
    * Generates JWT Access and Refresh tokens
    */
   private generateTokens(user: IUser, organizationName?: string): AuthTokens {
-    const rawRole = ((user.role || '') as string).toUpperCase().replace('-', '_');
-    let finalRole: UserRole = USER_ROLES.ORG_ADMIN;
+    const rawRole = ((user.role || '') as string).toUpperCase().replace(/-/g, '_');
+
+    let finalRole: UserRole = user.role as UserRole;
     if (rawRole === 'SUPERADMIN' || rawRole === 'SUPER_ADMIN') {
       finalRole = USER_ROLES.SUPER_ADMIN;
     } else if (rawRole === 'ADMIN' || rawRole === 'ORG_ADMIN') {
@@ -49,9 +50,16 @@ export class AuthService {
     }
 
     const orgId = user.organizationId || 'org_advmen_platform';
+
+    // Ensure permission fallback checks both normalized role keys
+    const roleDefaultKey = (user.role || '').toLowerCase();
     const permissions = (user.permissions && user.permissions.length > 0)
       ? user.permissions
-      : (ROLE_DEFAULT_PERMISSIONS[finalRole] || Object.values(PERMISSION_KEYS));
+      : (
+        ROLE_DEFAULT_PERMISSIONS[finalRole] ||
+        ROLE_DEFAULT_PERMISSIONS[roleDefaultKey as keyof typeof ROLE_DEFAULT_PERMISSIONS] ||
+        Object.values(PERMISSION_KEYS)
+      );
 
     const payload = {
       id: user._id.toString(),
