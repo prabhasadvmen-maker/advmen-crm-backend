@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: mycastnow-backend
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: ADMIN_EMAIL
+        value: superadmin@mycastnow.com
+      - key: ADMIN_PASSWORD
+        sync: false
