@@ -41,15 +41,18 @@ export class AuthService {
    * Generates JWT Access and Refresh tokens
    */
   private generateTokens(user: IUser, organizationName?: string): AuthTokens {
-    const rawRole = ((user.role || '') as string).toUpperCase().replace(/-/g, '_');
-
-    let finalRole: UserRole = user.role as UserRole;
+    const rawRole = ((user.role || '') as string).toUpperCase().replace(/-/g, '_').trim();
+    let finalRole: UserRole = USER_ROLES.SALES_REP;
     if (rawRole === 'SUPERADMIN' || rawRole === 'SUPER_ADMIN') {
       finalRole = USER_ROLES.SUPER_ADMIN;
     } else if (rawRole === 'ADMIN' || rawRole === 'ORG_ADMIN') {
       finalRole = USER_ROLES.ORG_ADMIN;
+    } else if (rawRole === 'EMPLOYEE' || rawRole === 'STAFF' || rawRole === 'USER') {
+      finalRole = USER_ROLES.SALES_REP;
     } else if (USER_ROLES[rawRole as keyof typeof USER_ROLES]) {
       finalRole = USER_ROLES[rawRole as keyof typeof USER_ROLES];
+    } else {
+      finalRole = USER_ROLES.SALES_REP;
     }
 
     const orgId = user.organizationId || 'org_advmen_platform';
@@ -200,14 +203,18 @@ export class AuthService {
     const orgId = user.organizationId || 'org_advmen_platform';
     const org = await OrganizationModel.findOne({ organizationId: orgId });
 
-    const rawRole = ((user.role || '') as string).toUpperCase().replace('-', '_');
-    let finalRole: UserRole = USER_ROLES.ORG_ADMIN;
+    const rawRole = ((user.role || '') as string).toUpperCase().replace(/-/g, '_').trim();
+    let finalRole: UserRole = USER_ROLES.SALES_REP;
     if (rawRole === 'SUPERADMIN' || rawRole === 'SUPER_ADMIN') {
       finalRole = USER_ROLES.SUPER_ADMIN;
     } else if (rawRole === 'ADMIN' || rawRole === 'ORG_ADMIN') {
       finalRole = USER_ROLES.ORG_ADMIN;
+    } else if (rawRole === 'EMPLOYEE' || rawRole === 'STAFF' || rawRole === 'USER') {
+      finalRole = USER_ROLES.SALES_REP;
     } else if (USER_ROLES[rawRole as keyof typeof USER_ROLES]) {
       finalRole = USER_ROLES[rawRole as keyof typeof USER_ROLES];
+    } else {
+      finalRole = USER_ROLES.SALES_REP;
     }
 
     if (finalRole !== USER_ROLES.SUPER_ADMIN && finalRole !== USER_ROLES.ORG_ADMIN) {

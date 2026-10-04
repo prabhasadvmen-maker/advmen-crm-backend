@@ -63,10 +63,11 @@ const UserSchema = new Schema<IUser>(
       type: String,
       default: USER_ROLES.SALES_REP,
       set: (val: string) => {
-        const up = (val || '').toUpperCase().replace('-', '_');
+        const up = (val || '').toUpperCase().replace(/-/g, '_').trim();
         if (up === 'SUPERADMIN' || up === 'SUPER_ADMIN') return USER_ROLES.SUPER_ADMIN;
         if (up === 'ADMIN' || up === 'ORG_ADMIN') return USER_ROLES.ORG_ADMIN;
-        return up;
+        if (up === 'EMPLOYEE' || up === 'STAFF' || up === 'USER') return USER_ROLES.SALES_REP;
+        return up || USER_ROLES.SALES_REP;
       },
     },
     permissions: {
