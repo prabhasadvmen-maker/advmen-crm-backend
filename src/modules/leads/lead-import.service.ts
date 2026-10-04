@@ -346,16 +346,57 @@ export class LeadImportService {
     };
   }
 
+  private unassignedConditions(): Record<string, unknown>[] {
+    return [
+      {
+        $or: [
+          { ownerId: { $exists: false } },
+          { ownerId: null },
+          { ownerId: '' },
+        ],
+      },
+      {
+        $or: [
+          { 'assignedTo.id': { $exists: false } },
+          { 'assignedTo.id': null },
+          { 'assignedTo.id': '' },
+        ],
+      },
+      {
+        $or: [
+          { 'assignedTo.name': { $exists: false } },
+          { 'assignedTo.name': null },
+          { 'assignedTo.name': '' },
+        ],
+      },
+    ];
+  }
+
+  private buildUnassignedLeadIdsFilter(organizationId: string, leadIds: string[]) {
+    const leadIdsFilter = this.buildLeadIdsFilter(organizationId, leadIds);
+    return {
+      organizationId,
+      $and: [
+        { $or: leadIdsFilter.$or },
+        ...this.unassignedConditions(),
+      ],
+    };
+  }
+
   /**
-   * Bulk assign all specified lead IDs to one employee
+   * Bulk assign only unassigned leads to one employee.
    */
   async assign(organizationId: string, leadIds: string[], employeeId: string) {
+    const uniqueLeadIds = [...new Set(leadIds)];
+    if (uniqueLeadIds.length !== leadIds.length) {
+      throw AppError.badRequest('The lead selection contains duplicate IDs.');
+    }
     const employee = await UserModel.findOne({ _id: employeeId, organizationId, isActive: true }).lean();
     if (!employee) {
       throw AppError.badRequest('Select an active employee in this workspace.');
     }
 
-    const filter = this.buildLeadIdsFilter(organizationId, leadIds);
+    const filter = this.buildUnassignedLeadIdsFilter(organizationId, uniqueLeadIds);
     const result = await LeadModel.updateMany(filter, {
       $set: {
         ownerId: employeeId,
@@ -388,12 +429,7 @@ export class LeadImportService {
 
     const unassignedFilter = {
       organizationId,
-      $or: [
-        { ownerId: { $exists: false } },
-        { ownerId: null },
-        { ownerId: '' },
-        { status: 'NEW' },
-      ],
+      $and: this.unassignedConditions(),
     };
 
     const targetLeads = await LeadModel.find(unassignedFilter)
@@ -412,7 +448,11 @@ export class LeadImportService {
 
     const targetIds = targetLeads.map((l) => l._id);
     const result = await LeadModel.updateMany(
-      { _id: { $in: targetIds }, organizationId },
+      {
+        organizationId,
+        _id: { $in: targetIds },
+        $and: this.unassignedConditions(),
+      },
       {
         $set: {
           ownerId: employeeId,
@@ -436,7 +476,14 @@ export class LeadImportService {
    * Distribute leads equally across multiple employees (Round-Robin)
    */
   async distributeEvenly(organizationId: string, leadIds: string[], employeeIds: string[]) {
+    const uniqueLeadIds = [...new Set(leadIds)];
+    if (uniqueLeadIds.length !== leadIds.length) {
+      throw AppError.badRequest('The lead selection contains duplicate IDs.');
+    }
     const uniqueEmployeeIds = [...new Set(employeeIds)];
+    if (uniqueEmployeeIds.length === 0) {
+      throw AppError.badRequest('Select at least one active employee for distribution.');
+    }
     const employees = await UserModel.find({
       _id: { $in: uniqueEmployeeIds },
       organizationId,
@@ -450,7 +497,7 @@ export class LeadImportService {
     const employeeById = new Map(employees.map(employee => [employee._id.toString(), employee]));
     const assignments = new Map<string, string[]>();
 
-    leadIds.forEach((leadId, index) => {
+    uniqueLeadIds.forEach((leadId, index) => {
       const employeeId = uniqueEmployeeIds[index % uniqueEmployeeIds.length];
       assignments.set(employeeId, [...(assignments.get(employeeId) || []), leadId]);
     });
@@ -458,7 +505,7 @@ export class LeadImportService {
     const results = await Promise.all(
       [...assignments.entries()].map(async ([employeeId, ids]) => {
         const employee = employeeById.get(employeeId)!;
-        const filter = this.buildLeadIdsFilter(organizationId, ids);
+        const filter = this.buildUnassignedLeadIdsFilter(organizationId, ids);
         const result = await LeadModel.updateMany(filter, {
           $set: {
             ownerId: employeeId,
@@ -486,6 +533,15 @@ export class LeadImportService {
     organizationId: string,
     distribution: Array<{ employeeId: string; leadIds: string[] }>
   ) {
+    const assignedLeadIds = new Set<string>();
+    for (const group of distribution) {
+      for (const leadId of group.leadIds) {
+        if (assignedLeadIds.has(leadId)) {
+          throw AppError.badRequest(`Lead ${leadId} is assigned more than once in this distribution.`);
+        }
+        assignedLeadIds.add(leadId);
+      }
+    }
     const employeeIds = [...new Set(distribution.map(d => d.employeeId))];
     const employees = await UserModel.find({
       _id: { $in: employeeIds },
@@ -493,14 +549,18 @@ export class LeadImportService {
       isActive: true,
     }).select('_id name avatarUrl').lean();
 
+    if (employees.length !== employeeIds.length) {
+      throw AppError.badRequest('Every selected employee must be active and belong to this workspace.');
+    }
+
     const employeeById = new Map(employees.map(emp => [emp._id.toString(), emp]));
 
     const results = await Promise.all(
       distribution.map(async item => {
         const employee = employeeById.get(item.employeeId);
-        if (!employee) return { employee: { id: item.employeeId, name: 'Unknown' }, count: 0 };
+        if (!employee) throw AppError.badRequest('Select an active employee in this workspace.');
 
-        const filter = this.buildLeadIdsFilter(organizationId, item.leadIds);
+        const filter = this.buildUnassignedLeadIdsFilter(organizationId, item.leadIds);
         const result = await LeadModel.updateMany(filter, {
           $set: {
             ownerId: item.employeeId,
@@ -527,12 +587,7 @@ export class LeadImportService {
   async getUnassignedSummary(organizationId: string) {
     const filter = {
       organizationId,
-      $or: [
-        { ownerId: { $exists: false } },
-        { ownerId: null },
-        { ownerId: '' },
-        { status: 'NEW' },
-      ],
+      $and: this.unassignedConditions(),
     };
     const total = await LeadModel.countDocuments(filter);
     const docs = await LeadModel.find(filter).select('_id leadId').sort({ createdAt: -1 }).limit(50000).lean();

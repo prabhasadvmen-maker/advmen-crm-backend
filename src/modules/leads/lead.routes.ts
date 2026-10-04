@@ -102,6 +102,7 @@ leadRouter.get(
 
 // Queries, finalized leads, and employee stats routes (placed before /:id)
 leadRouter.get('/queries/all', leadController.getAllQueries);
+leadRouter.get('/finalized/mine', leadController.getMyFinalizedLeads);
 leadRouter.get('/finalized/all', leadController.getFinalizedLeads);
 leadRouter.get('/stats/employees', leadController.getEmployeeStats);
 

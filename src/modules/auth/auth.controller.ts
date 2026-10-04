@@ -27,7 +27,11 @@ export class AuthController {
   }
 
   async login(req: Request, res: Response): Promise<void> {
-    const result = await authService.login(req.body);
+    const result = await authService.login({
+      ...req.body,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    });
 
     res.cookie('accessToken', result.tokens.accessToken, {
       httpOnly: true,
@@ -73,10 +77,11 @@ export class AuthController {
 
   async logout(req: Request, res: Response): Promise<void> {
     const userId = req.user?.id;
+    const organizationId = req.user?.organizationId;
     const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
 
     if (userId) {
-      await authService.logout(userId, refreshToken);
+      await authService.logout(userId, refreshToken, organizationId);
     }
 
     res.clearCookie('accessToken', {
@@ -106,6 +111,54 @@ export class AuthController {
     const { otp, newPassword } = req.body;
     await authService.resetPassword(otp, newPassword);
     ApiResponse.success(res, { success: true }, 200, undefined, 'Password updated successfully. Please sign in again.');
+  }
+
+  async attendanceSso(req: Request, res: Response): Promise<void> {
+    const { empId, email, identifier, target } = req.body || {};
+    const result = await authService.attendanceSso({ empId, email, identifier, target });
+
+    // Set secure HTTP-only cookies
+    res.cookie('accessToken', result.accessToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.cookie('refreshToken', result.refreshToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    ApiResponse.success(res, result, 200, undefined, 'SSO authentication successful');
+  }
+
+  async attendanceRedirect(req: Request, res: Response): Promise<void> {
+    const empId = req.query.empId as string;
+    const email = req.query.email as string;
+    const identifier = req.query.identifier as string;
+    const target = (req.query.target as string) || '/employee';
+
+    const result = await authService.attendanceSso({ empId, email, identifier, target });
+
+    // Set secure HTTP-only cookies
+    res.cookie('accessToken', result.accessToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.cookie('refreshToken', result.refreshToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.redirect(result.redirectUrl);
   }
 }
 

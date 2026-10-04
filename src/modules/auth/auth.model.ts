@@ -13,6 +13,7 @@ export interface IUser extends Document {
   avatarUrl?: string;
   department?: string;
   phone?: string;
+  employeeId?: string;
   isActive: boolean;
   isEmailVerified: boolean;
   refreshTokens: string[];
@@ -87,6 +88,11 @@ const UserSchema = new Schema<IUser>(
     phone: {
       type: String,
     },
+    employeeId: {
+      type: String,
+      trim: true,
+      uppercase: true,
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -120,6 +126,10 @@ const UserSchema = new Schema<IUser>(
 // Critical compound indexes per specification
 UserSchema.index({ organizationId: 1, normalizedEmail: 1 }, { unique: true });
 UserSchema.index({ organizationId: 1, role: 1, isActive: 1 });
+UserSchema.index(
+  { employeeId: 1 },
+  { unique: true, partialFilterExpression: { employeeId: { $type: 'string' } } }
+);
 
 UserSchema.methods.comparePassword = async function (candidatePassword: string): Promise<boolean> {
   const hash = this.passwordHash || (this as any).password;

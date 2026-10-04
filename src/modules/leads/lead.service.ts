@@ -10,6 +10,7 @@ import { taskRepository } from '../tasks/task.repository.js';
 import { dealRepository } from '../deals/deal.repository.js';
 import { USER_ROLES, UserRole } from '../../config/constants.js';
 import { AuthenticatedUser } from '../../middleware/auth.middleware.js';
+import { InvoiceModel } from '../invoices-payments/invoice.model.js';
 
 export class LeadService {
   /**
@@ -338,6 +339,115 @@ export class LeadService {
     return query;
   }
 
+  private async getDeletableLeads(query: Record<string, unknown>): Promise<{
+    deletableIds: mongoose.Types.ObjectId[];
+    matchedCount: number;
+  }> {
+    const [deletableLeads, matchedCount] = await Promise.all([
+      LeadModel.aggregate<{ _id: mongoose.Types.ObjectId }>([
+        {
+          $match: {
+            $and: [
+              query,
+              { $expr: { $eq: [{ $size: { $ifNull: ['$queries', []] } }, 0] } },
+            ],
+          },
+        },
+        {
+          $lookup: {
+            from: InvoiceModel.collection.name,
+            let: { leadObjectId: { $toString: '$_id' }, leadOrganizationId: '$organizationId' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ['$organizationId', '$$leadOrganizationId'] },
+                      { $eq: ['$leadId', '$$leadObjectId'] },
+                      { $eq: ['$status', 'PAID'] },
+                    ],
+                  },
+                },
+              },
+              { $group: { _id: null, totalPaid: { $sum: '$amount' } } },
+            ],
+            as: 'paidInvoices',
+          },
+        },
+        {
+          $addFields: {
+            _deletionTotalAmount: {
+              $ifNull: ['$clearedInfo.dealValue', { $ifNull: ['$budget', 0] }],
+            },
+            _deletionPaidAmount: {
+              $max: [
+                { $ifNull: ['$clearedInfo.paymentTotalPaid', 0] },
+                { $ifNull: [{ $arrayElemAt: ['$paidInvoices.totalPaid', 0] }, 0] },
+              ],
+            },
+            _deletionIsFinalized: {
+              $or: [
+                { $ne: [{ $ifNull: ['$clearedInfo.clearedAt', null] }, null] },
+                { $in: ['$status', ['WON', 'CONVERTED']] },
+              ],
+            },
+          },
+        },
+        {
+          $match: {
+            $expr: {
+              $not: [
+                {
+                  $and: [
+                    '$_deletionIsFinalized',
+                    { $gt: ['$_deletionTotalAmount', 0] },
+                    { $gt: ['$_deletionTotalAmount', '$_deletionPaidAmount'] },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+        { $project: { _id: 1 } },
+      ]),
+      LeadModel.countDocuments(query),
+    ]);
+
+    return {
+      deletableIds: deletableLeads.map((lead) => lead._id),
+      matchedCount,
+    };
+  }
+
+  private getDeletionSafetyExpression(): Record<string, unknown> {
+    const totalAmount = {
+      $ifNull: ['$clearedInfo.dealValue', { $ifNull: ['$budget', 0] }],
+    };
+    const isFinalized = {
+      $or: [
+        { $ne: [{ $ifNull: ['$clearedInfo.clearedAt', null] }, null] },
+        { $in: ['$status', ['WON', 'CONVERTED']] },
+      ],
+    };
+
+    return {
+      $and: [
+        { $eq: [{ $size: { $ifNull: ['$queries', []] } }, 0] },
+        {
+          $not: [
+            {
+              $and: [
+                isFinalized,
+                { $gt: [totalAmount, 0] },
+                { $gt: [totalAmount, { $ifNull: ['$clearedInfo.paymentTotalPaid', 0] }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
   async getBulkDeleteCount(
     organizationId: string,
     filter: {
@@ -348,10 +458,13 @@ export class LeadService {
       unassignedOnly?: boolean;
       all?: boolean;
     }
-  ): Promise<{ count: number }> {
+  ): Promise<{ count: number; protectedCount: number }> {
     const query = this.buildDeleteQuery(organizationId, filter);
-    const count = await LeadModel.countDocuments(query);
-    return { count };
+    const { deletableIds, matchedCount } = await this.getDeletableLeads(query);
+    return {
+      count: deletableIds.length,
+      protectedCount: matchedCount - deletableIds.length,
+    };
   }
 
   async bulkDeleteLeads(
@@ -364,17 +477,44 @@ export class LeadService {
       unassignedOnly?: boolean;
       all?: boolean;
     }
-  ): Promise<{ deletedCount: number }> {
+  ): Promise<{ deletedCount: number; protectedCount: number }> {
     const query = this.buildDeleteQuery(organizationId, filter);
-    const result = await LeadModel.deleteMany(query);
-    return { deletedCount: result.deletedCount };
+    const { deletableIds, matchedCount } = await this.getDeletableLeads(query);
+    const result = deletableIds.length > 0
+      ? await LeadModel.deleteMany({
+          organizationId,
+          _id: { $in: deletableIds },
+          $expr: this.getDeletionSafetyExpression(),
+        })
+      : { deletedCount: 0 };
+    if (result.deletedCount > 0) {
+      eventBus.emit('lead.deleted', { organizationId, deletedCount: result.deletedCount });
+    }
+    return {
+      deletedCount: result.deletedCount,
+      protectedCount: matchedCount - deletableIds.length,
+    };
   }
 
   async deleteLead(organizationId: string, id: string): Promise<void> {
-    const deleted = await leadRepository.deleteById(organizationId, id);
-    if (!deleted) {
+    const query = this.buildDeleteQuery(organizationId, { leadIds: [id] });
+    const { deletableIds, matchedCount } = await this.getDeletableLeads(query);
+    if (matchedCount === 0) {
       throw AppError.notFound('Lead');
     }
+    if (deletableIds.length === 0) {
+      throw AppError.conflict('This lead cannot be deleted because it has query history or an outstanding payment balance.');
+    }
+
+    const deleted = await LeadModel.deleteOne({
+      organizationId,
+      _id: deletableIds[0],
+      $expr: this.getDeletionSafetyExpression(),
+    });
+    if (deleted.deletedCount === 0) {
+      throw AppError.conflict('This lead changed and can no longer be deleted safely. Refresh and try again.');
+    }
+    eventBus.emit('lead.deleted', { organizationId, deletedCount: 1 });
   }
 
   /**
@@ -613,9 +753,13 @@ export class LeadService {
     return lead;
   }
 
-  async getFinalizedLeads(organizationId: string) {
+  async getFinalizedLeads(organizationId: string, employeeId?: string) {
+    const ownershipFilter = employeeId
+      ? { 'clearedInfo.clearedBy.id': employeeId }
+      : {};
     const leads = await LeadModel.find({
       organizationId,
+      ...ownershipFilter,
       $or: [
         { 'clearedInfo.clearedAt': { $exists: true } },
         { status: { $in: ['WON', 'CONVERTED'] } },
@@ -623,6 +767,21 @@ export class LeadService {
     })
       .sort({ 'clearedInfo.clearedAt': -1, updatedAt: -1 })
       .lean();
+
+    const leadIds = leads.map((lead) => lead._id.toString());
+    const paymentTotals = leadIds.length
+      ? await InvoiceModel.aggregate<{ _id: string; totalPaid: number }>([
+          {
+            $match: {
+              organizationId,
+              leadId: { $in: leadIds },
+              status: 'PAID',
+            },
+          },
+          { $group: { _id: '$leadId', totalPaid: { $sum: '$amount' } } },
+        ])
+      : [];
+    const paidByLeadId = new Map(paymentTotals.map(({ _id, totalPaid }) => [_id, totalPaid]));
 
     return leads.map((l: any) => {
       const address =
@@ -666,6 +825,12 @@ export class LeadService {
           message: employeeMsg,
           dealValue: l.clearedInfo?.dealValue !== undefined ? l.clearedInfo.dealValue : (l.budget || 0),
           clearedBy: l.clearedInfo?.clearedBy || (l.assignedTo ? { id: l.assignedTo.id, name: l.assignedTo.name } : undefined),
+          paymentInvoiceId: l.clearedInfo?.paymentInvoiceId,
+          paymentRecordedAt: l.clearedInfo?.paymentRecordedAt,
+          paymentTotalPaid: Math.max(
+            l.clearedInfo?.paymentTotalPaid || 0,
+            paidByLeadId.get(l._id.toString()) || 0
+          ),
         },
         createdAt: l.createdAt,
         updatedAt: l.updatedAt,

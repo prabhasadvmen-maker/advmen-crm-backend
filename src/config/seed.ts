@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { connectDB, disconnectDB } from './db.js';
 import { OrganizationModel } from '../modules/organizations/organization.model.js';
 import { UserModel } from '../modules/auth/auth.model.js';
+import { EmployeeCounterModel } from '../modules/users/employeeCounter.model.js';
 import { LeadModel } from '../modules/leads/lead.model.js';
 import { DealModel } from '../modules/deals/deal.model.js';
 import { TaskModel } from '../modules/tasks/task.model.js';
@@ -130,7 +131,7 @@ export async function seedDatabase(forceClean: boolean = false): Promise<void> {
 
   // 4. Ensure Demo Employee Account with Mobile (9876543210 / rahul.employee@platform.com / password123)
   const empPasswordHash = await bcrypt.hash('password123', 10);
-  await UserModel.findOneAndUpdate(
+  const demoEmployee = await UserModel.findOneAndUpdate(
     { normalizedEmail: 'rahul.employee@platform.com' },
     {
       $set: {
@@ -149,7 +150,29 @@ export async function seedDatabase(forceClean: boolean = false): Promise<void> {
     },
     { upsert: true, new: true }
   );
-  logger.info('👤 Demo Admin (admin@platform.com) and Demo Employee (Phone: 9876543210) ready.');
+  if (demoEmployee && !demoEmployee.employeeId) {
+    const year = new Date().getFullYear();
+    const employeeCounter = await EmployeeCounterModel.findByIdAndUpdate(
+      `employee-${year}`,
+      { $inc: { sequence: 1 } },
+      { new: true, upsert: true }
+    );
+    if (!employeeCounter) {
+      throw new Error('Could not allocate an Employee ID for the demo employee.');
+    }
+    demoEmployee.employeeId = `EMP-${year}-${String(employeeCounter.sequence).padStart(4, '0')}`;
+    await demoEmployee.save();
+  } else if (demoEmployee?.employeeId) {
+    const existingId = demoEmployee.employeeId.match(/^EMP-(\d{4})-(\d+)$/i);
+    if (existingId) {
+      await EmployeeCounterModel.findByIdAndUpdate(
+        `employee-${existingId[1]}`,
+        { $max: { sequence: Number(existingId[2]) } },
+        { new: true, upsert: true }
+      );
+    }
+  }
+  logger.info(`👤 Demo Admin and Demo Employee (${demoEmployee?.employeeId || 'Employee ID unavailable'}) ready.`);
 
   // 5. Seed Real Initial Leads into MongoDB if database has no leads
   const leadsCount = await LeadModel.countDocuments({ organizationId: platformOrg.organizationId });

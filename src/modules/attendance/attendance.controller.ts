@@ -10,6 +10,9 @@ export class AttendanceController {
    */
   async getAttendanceList(req: Request, res: Response): Promise<void> {
     const user = (req as any).user as AuthenticatedUser;
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ORG_ADMIN') {
+      throw AppError.forbidden('Only administrators can view employee attendance');
+    }
     const { date, startDate, endDate, userId, department, status, search, page, limit } = req.query;
 
     const isSuperAdmin = user.role === 'SUPER_ADMIN';
@@ -57,6 +60,21 @@ export class AttendanceController {
       success: true,
       message: 'Punch-out recorded successfully',
       record: updated,
+    });
+  }
+
+  /**
+   * POST /api/v1/attendance/sync
+   * Admin triggers manual sync with external Attendance CRM app
+   */
+  async syncExternalAttendance(req: Request, res: Response): Promise<void> {
+    const user = (req as any).user as AuthenticatedUser;
+    const result = await attendanceService.syncExternalAttendance(user.organizationId);
+
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      syncedCount: result.syncedCount,
     });
   }
 }

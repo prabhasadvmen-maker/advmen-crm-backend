@@ -40,6 +40,7 @@ describe('UserService Unit Tests', () => {
       userService.createUser(mockAdminRequester, {
         name: 'Hacker',
         email: 'hacker@example.com',
+        password: 'password123',
         role: USER_ROLES.SUPER_ADMIN,
       })
     ).rejects.toThrow('Only root Super Administrators can provision new Super Admin accounts.');

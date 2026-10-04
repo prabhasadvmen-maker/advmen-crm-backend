@@ -96,7 +96,7 @@ const DealSchema = new Schema<IDeal>(
     },
     currency: {
       type: String,
-      default: 'USD',
+      default: 'INR',
     },
     stage: {
       type: String,

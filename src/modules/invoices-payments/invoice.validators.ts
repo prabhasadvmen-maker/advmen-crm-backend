@@ -7,7 +7,7 @@ export const CreateInvoiceSchema = z.object({
   recipientName: z.string().optional(),
   recipientEmail: z.string().email('Valid recipient email is required'),
   amount: z.union([z.number(), z.string().transform(Number)]).optional().default(25000),
-  currency: z.string().optional().default('USD'),
+  currency: z.string().optional().default('INR'),
   lineItems: z.array(z.any()).optional(),
   dueDate: z
     .union([z.string(), z.date()])
@@ -26,6 +26,10 @@ export const RecordPaymentSchema = z.object({
   paymentId: z.string().min(1, 'Payment transaction ID is required'),
   paymentProvider: z.string().optional().default('stripe'),
   idempotencyKey: z.string().min(1, 'Idempotency key is required'),
+});
+
+export const RecordLeadPaymentSchema = z.object({
+  amount: z.number().finite().positive('Received amount must be greater than zero').max(1_000_000_000_000),
 });
 
 export const InvoiceFilterQuerySchema = z.object({

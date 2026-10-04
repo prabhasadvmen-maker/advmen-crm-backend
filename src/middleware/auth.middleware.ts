@@ -8,6 +8,9 @@ import { UserRole } from '../config/constants.js';
 export interface AuthenticatedUser {
   id: string;
   email: string;
+  employeeId?: string;
+  department?: string;
+  phone?: string;
   name: string;
   role: UserRole;
   organizationId: string;
@@ -26,52 +29,58 @@ declare global {
 }
 
 export function authMiddleware(req: Request, _res: Response, next: NextFunction): void {
-  try {
-    let token: string | undefined;
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+  const cookieToken = req.cookies?.accessToken as string | undefined;
+  const tokens = [...new Set([cookieToken, bearerToken].filter((token): token is string => Boolean(token)))];
 
-    // 1. Check Authorization Bearer Header
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7);
-    } else if (req.cookies?.accessToken) {
-      // 2. Check HTTP-only cookie
-      token = req.cookies.accessToken;
+  if (tokens.length === 0) {
+    next(AppError.unauthorized('Authentication token missing'));
+    return;
+  }
+
+  let tokenExpired = false;
+  let invalidToken = false;
+  for (const token of tokens) {
+    try {
+      const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET) as AuthenticatedUser;
+      if (!decoded.id || !decoded.organizationId) {
+        invalidToken = true;
+        continue;
+      }
+
+      req.user = decoded;
+      req.organizationId = decoded.organizationId;
+
+      import('../shared/context/asyncContext.js').then(({ updateRequestContext }) => {
+        updateRequestContext({
+          organizationId: decoded.organizationId,
+          userId: decoded.id,
+          userRole: decoded.role,
+        });
+      }).catch(() => {});
+
+      next();
+      return;
+    } catch (error) {
+      if (error instanceof jwt.TokenExpiredError) {
+        tokenExpired = true;
+      } else if (error instanceof jwt.JsonWebTokenError) {
+        invalidToken = true;
+      } else {
+        next(error);
+        return;
+      }
     }
+  }
 
-    if (!token) {
-      throw AppError.unauthorized('Authentication token missing');
-    }
-
-    // 3. Verify JWT
-    const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET) as AuthenticatedUser;
-    
-    if (!decoded.id || !decoded.organizationId) {
-      throw AppError.unauthorized('Invalid token payload', ERROR_CODES.UNAUTHORIZED);
-    }
-
-    req.user = decoded;
-    req.organizationId = decoded.organizationId;
-
-    // Enrich AsyncLocalStorage context
-    import('../shared/context/asyncContext.js').then(({ updateRequestContext }) => {
-      updateRequestContext({
-        organizationId: decoded.organizationId,
-        userId: decoded.id,
-        userRole: decoded.role,
-      });
-    }).catch(() => {});
-
-    next();
-  } catch (error) {
-    if (error instanceof jwt.TokenExpiredError) {
-      next(new AppError('Access token has expired', 401, ERROR_CODES.TOKEN_EXPIRED));
-    } else if (error instanceof jwt.JsonWebTokenError) {
-      next(new AppError('Invalid authentication token', 401, ERROR_CODES.UNAUTHORIZED));
-    } else {
-      next(error);
-    }
+  if (tokenExpired) {
+    next(new AppError('Access token has expired', 401, ERROR_CODES.TOKEN_EXPIRED));
+  } else if (invalidToken) {
+    next(new AppError('Invalid authentication token', 401, ERROR_CODES.UNAUTHORIZED));
+  } else {
+    next(AppError.unauthorized('Authentication token missing'));
   }
 }
 
-// Alias export taaki attendance.routes.ts ya baaki routes bina import badle kaam kar sakein
 export { authMiddleware as authenticate };

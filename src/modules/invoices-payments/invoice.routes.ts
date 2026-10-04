@@ -5,7 +5,7 @@ import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { tenantMiddleware } from '../../middleware/tenant.middleware.js';
 import { requirePermission } from '../../middleware/permission.middleware.js';
 import { validateRequest } from '../../middleware/validate.middleware.js';
-import { CreateInvoiceSchema, RecordPaymentSchema, InvoiceFilterQuerySchema } from './invoice.validators.js';
+import { CreateInvoiceSchema, RecordPaymentSchema, RecordLeadPaymentSchema, InvoiceFilterQuerySchema } from './invoice.validators.js';
 import { PERMISSION_KEYS } from '../../config/constants.js';
 
 export const invoiceRouter = Router();
@@ -35,6 +35,13 @@ invoiceRouter.get(
   '/metrics',
   requirePermission(PERMISSION_KEYS.PAYMENT_VIEW),
   invoiceController.getRevenueMetrics
+);
+
+invoiceRouter.post(
+  '/leads/:leadId/payment',
+  requirePermission(PERMISSION_KEYS.PAYMENT_MANAGE),
+  validateRequest({ body: RecordLeadPaymentSchema }),
+  invoiceController.recordFinalizedLeadPayment
 );
 
 invoiceRouter.get(

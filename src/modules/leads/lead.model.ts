@@ -58,6 +58,7 @@ export interface ILead extends Document {
     purpose: string;
     status: 'GRANTED' | 'REVOKED' | 'OPT_OUT';
     capturedAt: Date;
+    capturedBy?: string;
     evidence?: string;
     revokedAt?: Date;
   };
@@ -90,6 +91,9 @@ export interface ILead extends Document {
     dealId?: string;
     dealValue?: number;
     clearedBy?: { id: string; name: string };
+    paymentInvoiceId?: string;
+    paymentRecordedAt?: Date;
+    paymentTotalPaid?: number;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -219,6 +223,7 @@ const LeadSchema = new Schema<ILead>(
       purpose: { type: String, default: 'SALES_CONTACT' },
       status: { type: String, enum: ['GRANTED', 'REVOKED', 'OPT_OUT'], default: 'GRANTED' },
       capturedAt: { type: Date, default: Date.now },
+      capturedBy: String,
       evidence: String,
       revokedAt: Date,
     },
@@ -261,6 +266,9 @@ const LeadSchema = new Schema<ILead>(
       message: String,
       dealId: String,
       dealValue: Number,
+      paymentInvoiceId: String,
+      paymentRecordedAt: Date,
+      paymentTotalPaid: { type: Number, default: 0 },
       clearedBy: {
         id: String,
         name: String,

@@ -7,7 +7,7 @@ export class AuthRepository extends BaseTenantRepository<IUser> {
   }
 
   /**
-   * Find user by identifier (email OR phone number) across all tenants for login
+   * Find user by employee ID, email, or phone across tenants for login
    */
   async findByIdentifierGlobal(identifier: string): Promise<IUser | null> {
     const raw = identifier.trim();
@@ -18,6 +18,7 @@ export class AuthRepository extends BaseTenantRepository<IUser> {
       { normalizedEmail: normalized },
       { email: raw },
       { phone: raw },
+      { employeeId: raw.toUpperCase() },
     ];
 
     if (digitsOnly.length >= 7) {
@@ -25,7 +26,29 @@ export class AuthRepository extends BaseTenantRepository<IUser> {
       queryConditions.push({ phone: new RegExp(digitsOnly + '$') });
     }
 
-    return this.model.findOne({ $or: queryConditions }).select('+passwordHash +password +refreshTokens').exec();
+    const selectCredentials = '+passwordHash +password +refreshTokens';
+    const user = await this.model
+      .findOne({ $or: queryConditions })
+      .select(selectCredentials)
+      .exec();
+
+    if (user || !/^[a-f\d]{6}$/i.test(raw)) {
+      return user;
+    }
+
+    // Older roster screens exposed the last six characters of Mongo user IDs as login IDs.
+    const legacyMatches = await this.model
+      .find({
+        role: { $ne: 'SUPER_ADMIN' },
+        $expr: {
+          $eq: [{ $substrCP: [{ $toString: '$_id' }, 18, 6] }, normalized],
+        },
+      })
+      .select(selectCredentials)
+      .limit(2)
+      .exec();
+
+    return legacyMatches.length === 1 ? legacyMatches[0] : null;
   }
 
   /**
@@ -33,6 +56,13 @@ export class AuthRepository extends BaseTenantRepository<IUser> {
    */
   async findByNormalizedEmailGlobal(normalizedEmail: string): Promise<IUser | null> {
     return this.model.findOne({ normalizedEmail }).select('+passwordHash +password +refreshTokens').exec();
+  }
+
+  async findByIdWithRefreshTokens(organizationId: string, id: string): Promise<IUser | null> {
+    return this.model
+      .findOne({ _id: id, organizationId })
+      .select('+refreshTokens')
+      .exec();
   }
 
   /**

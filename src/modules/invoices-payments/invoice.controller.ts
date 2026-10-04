@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { invoiceService } from './invoice.service.js';
 import { ApiResponse } from '../../shared/response/ApiResponse.js';
+import { AppError } from '../../shared/errors/AppError.js';
 
 export class InvoiceController {
   async createInvoice(req: Request, res: Response): Promise<void> {
@@ -32,6 +33,18 @@ export class InvoiceController {
     const organizationId = req.organizationId!;
     const invoice = await invoiceService.recordPayment(organizationId, req.params.id, req.body);
     ApiResponse.success(res, invoice, 200, undefined, 'Payment recorded successfully');
+  }
+
+  async recordFinalizedLeadPayment(req: Request, res: Response): Promise<void> {
+    if (req.user?.role !== 'SUPER_ADMIN' && req.user?.role !== 'ORG_ADMIN') {
+      throw AppError.forbidden('Only administrators can record finalized lead payments.');
+    }
+    const payment = await invoiceService.recordFinalizedLeadPayment(
+      req.organizationId!,
+      req.params.leadId,
+      req.body.amount
+    );
+    ApiResponse.success(res, payment, 200, undefined, 'Lead payment recorded successfully');
   }
 
   async getRevenueMetrics(req: Request, res: Response): Promise<void> {

@@ -12,17 +12,24 @@ export interface LogContext {
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 class Logger {
-  private formatLog(level: LogLevel, message: string, context?: LogContext, error?: unknown) {
+  private formatLog(level: LogLevel, message: string, context?: LogContext | any, error?: unknown) {
     const timestamp = new Date().toISOString();
     const reqContext = getRequestContext();
 
+    const normalizedContext =
+      context && typeof context === 'object'
+        ? context
+        : context !== undefined
+        ? { note: String(context) }
+        : {};
+
     const mergedContext: Record<string, unknown> = {
-      requestId: context?.requestId || reqContext?.requestId,
-      organizationId: context?.organizationId || reqContext?.organizationId,
-      userId: context?.userId || reqContext?.userId,
+      requestId: normalizedContext?.requestId || reqContext?.requestId,
+      organizationId: normalizedContext?.organizationId || reqContext?.organizationId,
+      userId: normalizedContext?.userId || reqContext?.userId,
       path: reqContext?.path,
       method: reqContext?.method,
-      ...context,
+      ...normalizedContext,
     };
 
     // Clean undefined values from context
@@ -59,19 +66,19 @@ class Logger {
     }
   }
 
-  info(message: string, context?: LogContext): void {
+  info(message: string, context?: LogContext | any): void {
     console.log(this.formatLog('info', message, context));
   }
 
-  warn(message: string, context?: LogContext): void {
+  warn(message: string, context?: LogContext | any): void {
     console.warn(this.formatLog('warn', message, context));
   }
 
-  error(message: string, error?: unknown, context?: LogContext): void {
+  error(message: string, error?: unknown, context?: LogContext | any): void {
     console.error(this.formatLog('error', message, context, error));
   }
 
-  debug(message: string, context?: LogContext): void {
+  debug(message: string, context?: LogContext | any): void {
     if (env.NODE_ENV === 'development') {
       console.debug(this.formatLog('debug', message, context));
     }

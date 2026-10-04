@@ -66,4 +66,55 @@ describe('OrganizationService Unit Tests', () => {
     expect(result[0].organizationId).toBe('org_test_1');
     expect(result[0].name).toBe('Test Tenant 1');
   });
+
+  it('saves workspace settings for an organization administrator', async () => {
+    const save = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const org = {
+      organizationId: 'org_acme_corp',
+      name: 'Old Name',
+      settings: {
+        timezone: 'UTC',
+        currency: 'USD',
+        leadResponseSlaMinutes: 15,
+        allowTelephonyRecording: true,
+      },
+      save,
+    };
+    (jest.spyOn(OrganizationModel, 'findOne') as any).mockResolvedValue(org);
+
+    const result = await organizationService.updateOrganizationSettings(mockOrgAdmin, 'org_acme_corp', {
+      name: 'Updated Acme',
+      settings: {
+        timezone: 'Asia/Kolkata',
+        currency: 'INR',
+        leadResponseSlaMinutes: 30,
+        allowTelephonyRecording: false,
+      },
+    });
+
+    expect(org.name).toBe('Updated Acme');
+    expect(org.settings).toEqual({
+      timezone: 'Asia/Kolkata',
+      currency: 'INR',
+      leadResponseSlaMinutes: 30,
+      allowTelephonyRecording: false,
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(result).toBe(org);
+  });
+
+  it('rejects workspace settings changes by non-admin users', async () => {
+    const employee = { ...mockOrgAdmin, role: USER_ROLES.SALES_REP };
+    await expect(
+      organizationService.updateOrganizationSettings(employee, 'org_acme_corp', {
+        name: 'Updated Acme',
+        settings: {
+          timezone: 'Asia/Kolkata',
+          currency: 'INR',
+          leadResponseSlaMinutes: 30,
+          allowTelephonyRecording: false,
+        },
+      })
+    ).rejects.toThrow('Only administrators can update workspace settings.');
+  });
 });

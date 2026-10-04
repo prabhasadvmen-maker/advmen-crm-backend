@@ -14,11 +14,22 @@ export const CreateOrganizationSchema = z.object({
   settings: z
     .object({
       timezone: z.string().default('UTC'),
-      currency: z.string().default('USD'),
+      currency: z.string().default('INR'),
       leadResponseSlaMinutes: z.number().default(15),
       allowTelephonyRecording: z.boolean().default(true),
     })
     .optional(),
 });
 
+export const UpdateOrganizationSettingsSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  settings: z.object({
+    timezone: z.string().trim().min(1).max(80),
+    currency: z.enum(['INR', 'USD', 'EUR', 'GBP']),
+    leadResponseSlaMinutes: z.number().int().min(1).max(10080),
+    allowTelephonyRecording: z.boolean(),
+  }),
+});
+
 export type CreateOrganizationInput = z.infer<typeof CreateOrganizationSchema>;
+export type UpdateOrganizationSettingsInput = z.infer<typeof UpdateOrganizationSettingsSchema>;

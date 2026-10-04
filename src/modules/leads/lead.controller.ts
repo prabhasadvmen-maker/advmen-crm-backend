@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { leadService } from './lead.service.js';
 import { ApiResponse } from '../../shared/response/ApiResponse.js';
 import { leadImportService } from './lead-import.service.js';
+import { AppError } from '../../shared/errors/AppError.js';
 
 export class LeadController {
   async createLead(req: Request, res: Response): Promise<void> {
@@ -137,9 +138,18 @@ export class LeadController {
   }
 
   async getFinalizedLeads(req: Request, res: Response): Promise<void> {
+    const teamRoles = ['SUPER_ADMIN', 'ORG_ADMIN', 'SALES_MANAGER'];
+    if (!teamRoles.includes(req.user!.role)) {
+      throw AppError.forbidden('Only administrators and sales managers can view all finalized leads');
+    }
     const organizationId = req.organizationId!;
     const finalized = await leadService.getFinalizedLeads(organizationId);
     ApiResponse.success(res, finalized, 200, undefined, 'Finalized leads retrieved');
+  }
+
+  async getMyFinalizedLeads(req: Request, res: Response): Promise<void> {
+    const finalized = await leadService.getFinalizedLeads(req.organizationId!, req.user!.id);
+    ApiResponse.success(res, finalized, 200, undefined, 'Your finalized leads retrieved');
   }
 
   async getEmployeeStats(req: Request, res: Response): Promise<void> {

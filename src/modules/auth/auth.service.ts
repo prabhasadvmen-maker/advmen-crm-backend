@@ -12,6 +12,8 @@ import { normalizeEmail } from '../../shared/utils/normalize.js';
 import { authRepository } from './auth.repository.js';
 import { OrganizationModel } from '../organizations/organization.model.js';
 import { IUser, UserModel } from './auth.model.js';
+import { attendanceService } from '../attendance/attendance.service.js';
+import { logger } from '../../shared/logger/logger.js';
 
 export interface AuthTokens {
   accessToken: string;
@@ -24,6 +26,7 @@ export interface AuthResponsePayload {
     id: string;
     name: string;
     email: string;
+    employeeId?: string;
     role: UserRole;
     organizationId: string;
     organizationName?: string;
@@ -53,17 +56,19 @@ export class AuthService {
 
     // Ensure permission fallback checks both normalized role keys
     const roleDefaultKey = (user.role || '').toLowerCase();
-    const permissions = (user.permissions && user.permissions.length > 0)
-      ? user.permissions
-      : (
-        ROLE_DEFAULT_PERMISSIONS[finalRole] ||
-        ROLE_DEFAULT_PERMISSIONS[roleDefaultKey as keyof typeof ROLE_DEFAULT_PERMISSIONS] ||
-        Object.values(PERMISSION_KEYS)
-      );
+    const roleDefaults =
+      ROLE_DEFAULT_PERMISSIONS[finalRole] ||
+      ROLE_DEFAULT_PERMISSIONS[roleDefaultKey as keyof typeof ROLE_DEFAULT_PERMISSIONS] ||
+      Object.values(PERMISSION_KEYS);
+    const permissions = [...new Set([...roleDefaults, ...(user.permissions || [])])];
 
     const payload = {
       id: user._id.toString(),
       email: user.email,
+      employeeId: user.employeeId,
+      department: user.department,
+      phone: user.phone,
+      avatarUrl: user.avatarUrl,
       name: user.name,
       role: finalRole,
       organizationId: orgId,
@@ -159,17 +164,24 @@ export class AuthService {
   }
 
   /**
-   * Login user by phone number or email and password
+   * Login user by employee ID, phone number, or email and password
    */
-  async login(data: { email?: string; phone?: string; identifier?: string; password: string }): Promise<AuthResponsePayload> {
+  async login(data: {
+    email?: string;
+    phone?: string;
+    identifier?: string;
+    password: string;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<AuthResponsePayload> {
     const rawIdentifier = data.identifier || data.phone || data.email || '';
     if (!rawIdentifier.trim()) {
-      throw AppError.badRequest('Please enter your phone number or email address.');
+      throw AppError.badRequest('Please enter your Employee ID, phone number, or email address.');
     }
 
     const user = await authRepository.findByIdentifierGlobal(rawIdentifier);
     if (!user) {
-      throw AppError.unauthorized('Invalid phone number/email or password', ERROR_CODES.INVALID_CREDENTIALS);
+      throw AppError.unauthorized('Invalid Employee ID, phone number/email, or password', ERROR_CODES.INVALID_CREDENTIALS);
     }
 
     if (!user.isActive) {
@@ -178,20 +190,15 @@ export class AuthService {
 
     const isMatch = await user.comparePassword(data.password);
     if (!isMatch) {
-      throw AppError.unauthorized('Invalid phone number/email or password', ERROR_CODES.INVALID_CREDENTIALS);
+      throw AppError.unauthorized('Invalid Employee ID, phone number/email, or password', ERROR_CODES.INVALID_CREDENTIALS);
+    }
+
+    if (user.role === USER_ROLES.ORG_ADMIN) {
+      throw AppError.forbidden('Organization Admin sign-in is disabled. Please use the Super Admin portal or an employee account.');
     }
 
     const orgId = user.organizationId || 'org_advmen_platform';
     const org = await OrganizationModel.findOne({ organizationId: orgId });
-
-    // Update last login
-    await authRepository.updateById(orgId, user._id.toString(), {
-      lastLoginAt: new Date(),
-    });
-
-    // Generate tokens & rotate refresh token
-    const tokens = this.generateTokens(user, org?.name);
-    await authRepository.addRefreshToken(user._id.toString(), tokens.refreshToken);
 
     const rawRole = ((user.role || '') as string).toUpperCase().replace('-', '_');
     let finalRole: UserRole = USER_ROLES.ORG_ADMIN;
@@ -203,15 +210,43 @@ export class AuthService {
       finalRole = USER_ROLES[rawRole as keyof typeof USER_ROLES];
     }
 
-    const permissions = (user.permissions && user.permissions.length > 0)
-      ? user.permissions
-      : (ROLE_DEFAULT_PERMISSIONS[finalRole] || Object.values(PERMISSION_KEYS));
+    if (finalRole !== USER_ROLES.SUPER_ADMIN && finalRole !== USER_ROLES.ORG_ADMIN) {
+      await attendanceService.recordLogin({
+        userId: user._id.toString(),
+        employeeId: user.employeeId,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: finalRole,
+        department: user.department,
+        organizationId: orgId,
+        ipAddress: data.ipAddress,
+        userAgent: data.userAgent,
+      });
+    }
+
+    // Update last login
+    await authRepository.updateById(orgId, user._id.toString(), {
+      lastLoginAt: new Date(),
+    });
+
+    // Generate tokens & rotate refresh token
+    const tokens = this.generateTokens(user, org?.name);
+    await authRepository.addRefreshToken(user._id.toString(), tokens.refreshToken);
+
+    const permissions = [
+      ...new Set([
+        ...(ROLE_DEFAULT_PERMISSIONS[finalRole] || Object.values(PERMISSION_KEYS)),
+        ...(user.permissions || []),
+      ]),
+    ];
 
     return {
       user: {
         id: user._id.toString(),
         name: user.name,
         email: user.email,
+        employeeId: user.employeeId,
         role: finalRole,
         organizationId: orgId,
         organizationName: org?.name || 'ADVMEN Workspace',
@@ -226,34 +261,40 @@ export class AuthService {
    * Rotate access token using valid refresh token
    */
   async refreshToken(refreshToken: string): Promise<AuthTokens> {
+    let decoded: { id: string; organizationId: string };
     try {
-      const decoded = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as {
+      decoded = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as {
         id: string;
         organizationId: string;
       };
-
-      const user = await authRepository.findById(decoded.organizationId, decoded.id);
-      if (!user || !user.isActive) {
-        throw AppError.unauthorized('Invalid or expired refresh token');
-      }
-
-      const org = await OrganizationModel.findOne({ organizationId: user.organizationId });
-      const newTokens = this.generateTokens(user, org?.name);
-
-      // Rotate: remove old, save new
-      await authRepository.removeRefreshToken(user._id.toString(), refreshToken);
-      await authRepository.addRefreshToken(user._id.toString(), newTokens.refreshToken);
-
-      return newTokens;
     } catch {
       throw AppError.unauthorized('Invalid or expired refresh token', ERROR_CODES.TOKEN_EXPIRED);
     }
+
+    const user = await authRepository.findByIdWithRefreshTokens(decoded.organizationId, decoded.id);
+    if (!user || !user.isActive || !user.refreshTokens?.includes(refreshToken)) {
+      throw AppError.unauthorized('Invalid or expired refresh token', ERROR_CODES.TOKEN_EXPIRED);
+    }
+
+    const org = await OrganizationModel.findOne({ organizationId: user.organizationId });
+    const newTokens = this.generateTokens(user, org?.name);
+
+    // Rotate: remove old, save new
+    await authRepository.removeRefreshToken(user._id.toString(), refreshToken);
+    await authRepository.addRefreshToken(user._id.toString(), newTokens.refreshToken);
+
+    return newTokens;
   }
 
   /**
-   * Invalidate refresh token on logout
+   * Invalidate refresh token on logout and record punch-out for attendance
    */
-  async logout(userId: string, refreshToken?: string): Promise<void> {
+  async logout(userId: string, refreshToken?: string, organizationId?: string): Promise<void> {
+    if (organizationId) {
+      await attendanceService.recordLogout(organizationId, userId).catch((err: any) => {
+        logger.warn(`Attendance logout recording note: ${err?.message || String(err)}`);
+      });
+    }
     if (refreshToken) {
       await authRepository.removeRefreshToken(userId, refreshToken);
     } else {
@@ -330,6 +371,65 @@ export class AuthService {
 
     // Invalidate all existing sessions for full security
     await authRepository.clearAllRefreshTokens(user._id.toString());
+  }
+
+  /**
+   * Single-Sign-On (SSO) login directly from Attendance App into Employee Dashboard
+   */
+  async attendanceSso(data: {
+    empId?: string;
+    email?: string;
+    identifier?: string;
+    target?: string;
+  }): Promise<{
+    redirectUrl: string;
+    accessToken: string;
+    refreshToken: string;
+    user: any;
+  }> {
+    const rawId = (data.empId || data.identifier || data.email || '').trim();
+    if (!rawId) {
+      throw AppError.badRequest('Employee ID or email is required for attendance SSO.');
+    }
+
+    const user = await authRepository.findByIdentifierGlobal(rawId);
+    if (!user) {
+      throw AppError.notFound(`No employee account found for '${rawId}'.`);
+    }
+
+    if (!user.isActive) {
+      throw AppError.forbidden('Employee account is inactive or deactivated.');
+    }
+
+    const orgId = user.organizationId || 'org_advmen_platform';
+    const org = await OrganizationModel.findOne({ organizationId: orgId });
+
+    const tokens = this.generateTokens(user, org?.name);
+    await authRepository.addRefreshToken(user._id.toString(), tokens.refreshToken);
+
+    await authRepository.updateById(orgId, user._id.toString(), {
+      lastLoginAt: new Date(),
+    });
+
+    const clientUrl = (env.CLIENT_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const targetDashboard = data.target || '/employee';
+    const redirectUrl = `${clientUrl}/auth/sso?token=${encodeURIComponent(tokens.accessToken)}&refreshToken=${encodeURIComponent(tokens.refreshToken)}&target=${encodeURIComponent(targetDashboard)}`;
+
+    return {
+      redirectUrl,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      user: {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        employeeId: user.employeeId,
+        role: user.role,
+        department: user.department,
+        organizationId: orgId,
+        organizationName: org?.name || 'ADVMEN Workspace',
+      },
+    };
   }
 }
 

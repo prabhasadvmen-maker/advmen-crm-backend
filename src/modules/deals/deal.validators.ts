@@ -7,7 +7,7 @@ export const CreateDealSchema = z.object({
   contactEmail: z.string().email().optional().or(z.literal('')),
   contactPhone: z.string().optional(),
   value: z.coerce.number().min(0, 'Value must be non-negative').default(0),
-  currency: z.string().optional().default('USD'),
+  currency: z.string().optional().default('INR'),
   stage: z
     .enum(['DISCOVERY', 'QUALIFICATION', 'PROPOSAL', 'NEGOTIATION', 'WON', 'LOST'])
     .optional()

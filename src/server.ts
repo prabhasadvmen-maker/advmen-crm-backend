@@ -20,7 +20,18 @@ async function bootstrap() {
   // 3. Initialize Real-Time WebSockets
   initSocketIO(server);
 
-  // 4. Start Listening
+  // 4. Handle Server Listen Errors & Start Listening
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      logger.error(`❌ Port ${env.PORT} is already in use by another running process.`);
+      logger.error(`👉 To free port ${env.PORT}, run: npx kill-port ${env.PORT} or stop existing running instances.`);
+      process.exit(1);
+    } else {
+      logger.error('❌ Server startup error:', err);
+      process.exit(1);
+    }
+  });
+
   server.listen(env.PORT, () => {
     logger.info(`🚀 ${env.APP_NAME} Backend running on port ${env.PORT} [${env.NODE_ENV}]`);
     logger.info(`🔗 Health Check: http://localhost:${env.PORT}/health/live`);

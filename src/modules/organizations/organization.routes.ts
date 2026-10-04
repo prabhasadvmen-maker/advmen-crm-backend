@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { organizationController } from './organization.controller.js';
 import { authMiddleware } from '../../middleware/auth.middleware.js';
 import { validateRequest } from '../../middleware/validate.middleware.js';
-import { CreateOrganizationSchema } from './organization.validators.js';
+import { CreateOrganizationSchema, UpdateOrganizationSettingsSchema } from './organization.validators.js';
 
 export const organizationRouter = Router();
 
@@ -14,6 +14,11 @@ organizationRouter.use(authMiddleware);
 
 organizationRouter.get('/', organizationController.getOrganizations);
 organizationRouter.get('/dashboard-stats', organizationController.getDashboardStats);
+organizationRouter.put(
+  '/:id/settings',
+  validateRequest({ body: UpdateOrganizationSettingsSchema }),
+  organizationController.updateOrganizationSettings
+);
 organizationRouter.get('/:id', organizationController.getOrganizationById);
 organizationRouter.post(
   '/',
@@ -21,4 +26,3 @@ organizationRouter.post(
   organizationController.createOrganization
 );
 organizationRouter.delete('/:id', organizationController.deleteOrganization);
-

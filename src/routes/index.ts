@@ -12,6 +12,8 @@ import { activityRouter } from '../modules/activities/activity.routes.js';
 import { automationRouter } from '../modules/automations/automation.routes.js';
 import { userRouter } from '../modules/users/user.routes.js';
 import { organizationRouter } from '../modules/organizations/organization.routes.js';
+import { attendanceRouter } from '../modules/attendance/attendance.routes.js';
+import { reportRouter } from '../modules/reports/report.routes.js';
 
 export const apiRouter = Router();
 
@@ -29,6 +31,7 @@ apiRouter.get('/', (_req: Request, res: Response) => {
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/users', userRouter);
 apiRouter.use('/organizations', organizationRouter);
+apiRouter.use('/attendance', attendanceRouter);
 apiRouter.use('/leads', leadRouter);
 apiRouter.use('/deals', dealRouter);
 apiRouter.use('/calls', callRouter);
@@ -38,8 +41,7 @@ apiRouter.use('/proposals', proposalRouter);
 apiRouter.use('/invoices', invoiceRouter);
 apiRouter.use('/activities', activityRouter);
 apiRouter.use('/automations', automationRouter);
-
-
+apiRouter.use('/reports', reportRouter);
 
 
 

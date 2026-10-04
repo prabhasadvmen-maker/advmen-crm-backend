@@ -60,7 +60,7 @@ const OrganizationSchema = new Schema<IOrganization>(
     },
     settings: {
       timezone: { type: String, default: 'UTC' },
-      currency: { type: String, default: 'USD' },
+      currency: { type: String, default: 'INR' },
       leadResponseSlaMinutes: { type: Number, default: 15 },
       allowTelephonyRecording: { type: Boolean, default: true },
     },

@@ -8,6 +8,8 @@ export interface IInvoice extends Document {
   organizationId: string;
   proposalId?: string;
   dealId?: string;
+  leadId?: string;
+  manualPaymentLeadId?: string;
   company: string;
   recipientEmail: string;
   amount: number;
@@ -41,6 +43,8 @@ const InvoiceSchema = new Schema<IInvoice>(
     },
     proposalId: String,
     dealId: String,
+    leadId: String,
+    manualPaymentLeadId: String,
     company: {
       type: String,
       required: true,
@@ -48,7 +52,6 @@ const InvoiceSchema = new Schema<IInvoice>(
     },
     recipientEmail: {
       type: String,
-      required: true,
       trim: true,
     },
     amount: {
@@ -57,7 +60,7 @@ const InvoiceSchema = new Schema<IInvoice>(
     },
     currency: {
       type: String,
-      default: 'USD',
+      default: 'INR',
     },
     status: {
       type: String,
@@ -86,5 +89,9 @@ const InvoiceSchema = new Schema<IInvoice>(
 
 InvoiceSchema.index({ organizationId: 1, createdAt: -1 });
 InvoiceSchema.index({ organizationId: 1, status: 1 });
+InvoiceSchema.index(
+  { organizationId: 1, manualPaymentLeadId: 1 },
+  { unique: true, partialFilterExpression: { manualPaymentLeadId: { $type: 'string' } } }
+);
 
 export const InvoiceModel = mongoose.model<IInvoice>('Invoice', InvoiceSchema);

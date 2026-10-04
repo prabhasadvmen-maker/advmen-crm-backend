@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import mongoose from 'mongoose';
 import { OrganizationModel, IOrganization } from './organization.model.js';
 import { UserModel } from '../auth/auth.model.js';
 import { LeadModel } from '../leads/lead.model.js';
@@ -10,6 +11,7 @@ import { InvoiceModel } from '../invoices-payments/invoice.model.js';
 import { CallModel } from '../calls/call.model.js';
 import { ActivityModel } from '../activities/activity.model.js';
 import { CreateOrganizationInput } from './organization.validators.js';
+import { UpdateOrganizationSettingsInput } from './organization.validators.js';
 import { AuthenticatedUser } from '../../middleware/auth.middleware.js';
 import { AppError } from '../../shared/errors/AppError.js';
 import { USER_ROLES } from '../../config/constants.js';
@@ -94,6 +96,31 @@ export class OrganizationService {
     };
   }
 
+  async updateOrganizationSettings(
+    requester: AuthenticatedUser,
+    organizationId: string,
+    input: UpdateOrganizationSettingsInput
+  ): Promise<any> {
+    if (requester.role !== USER_ROLES.SUPER_ADMIN && requester.role !== USER_ROLES.ORG_ADMIN) {
+      throw AppError.forbidden('Only administrators can update workspace settings.');
+    }
+    if (requester.role !== USER_ROLES.SUPER_ADMIN && requester.organizationId !== organizationId) {
+      throw AppError.forbidden('Access to this organization is restricted.');
+    }
+
+    const orgFilter = mongoose.Types.ObjectId.isValid(organizationId)
+      ? { $or: [{ organizationId }, { _id: organizationId }] }
+      : { organizationId };
+    const org = await OrganizationModel.findOne(orgFilter);
+    if (!org) throw AppError.notFound('Organization workspace');
+
+    org.name = input.name;
+    org.settings = { ...org.settings, ...input.settings };
+    await org.save();
+
+    return org;
+  }
+
   async createOrganization(requester: AuthenticatedUser, input: CreateOrganizationInput): Promise<any> {
     const isSuperAdmin = requester.role === USER_ROLES.SUPER_ADMIN;
     if (!isSuperAdmin) {
@@ -121,7 +148,7 @@ export class OrganizationService {
       },
       settings: input.settings || {
         timezone: 'UTC',
-        currency: 'USD',
+        currency: 'INR',
         leadResponseSlaMinutes: 15,
         allowTelephonyRecording: true,
       },

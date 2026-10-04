@@ -13,3 +13,7 @@ authRouter.post('/logout', authMiddleware, authController.logout);
 authRouter.get('/me', authMiddleware, authController.getMe);
 authRouter.post('/forgot-password', validateRequest({ body: ForgotPasswordSchema }), authController.forgotPassword);
 authRouter.post('/reset-password', validateRequest({ body: ResetPasswordSchema }), authController.resetPassword);
+
+// Attendance CRM SSO & Instant Redirect
+authRouter.post('/attendance-sso', authController.attendanceSso);
+authRouter.get('/attendance-redirect', authController.attendanceRedirect);

@@ -36,6 +36,11 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional().default(''),
   ANTHROPIC_API_KEY: z.string().optional().default(''),
 
+  WHATSAPP_ACCESS_TOKEN: z.string().optional().default(''),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional().default(''),
+  WHATSAPP_TEMPLATE_NAME: z.string().optional().default(''),
+  WHATSAPP_TEMPLATE_LANGUAGE: z.string().optional().default(''),
+  WHATSAPP_GRAPH_API_VERSION: z.string().default('v23.0'),
 
   AWS_REGION: z.string().default('us-east-1'),
   AWS_ACCESS_KEY_ID: z.string().optional().default(''),

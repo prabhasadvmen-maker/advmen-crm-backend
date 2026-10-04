@@ -2,6 +2,7 @@ import EventEmitter from 'events';
 
 export type EventPayloadMap = {
   'lead.created': { organizationId: string; leadId: string; source: string; score: number; ownerId?: string };
+  'lead.deleted': { organizationId: string; deletedCount: number };
   'lead.status_changed': { organizationId: string; leadId: string; previousStatus: string; newStatus: string; actorId?: string };
   'lead.score_updated': { organizationId: string; leadId: string; score: number; scoreCategory: string };
   'call.completed': { organizationId: string; callId: string; leadId: string; duration: number; disposition?: string };

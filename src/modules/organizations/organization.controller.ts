@@ -23,6 +23,16 @@ export class OrganizationController {
     ApiResponse.success(res, org, 200, undefined, 'Organization details');
   }
 
+  async updateOrganizationSettings(req: Request, res: Response): Promise<void> {
+    const requester = req.user as AuthenticatedUser;
+    const org = await organizationService.updateOrganizationSettings(
+      requester,
+      req.params.id,
+      req.body
+    );
+    ApiResponse.success(res, org, 200, undefined, 'Organization settings saved');
+  }
+
   async createOrganization(req: Request, res: Response): Promise<void> {
     const requester = req.user as AuthenticatedUser;
     const org = await organizationService.createOrganization(requester, req.body);

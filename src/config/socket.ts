@@ -103,6 +103,10 @@ function setupEventBusBridge(): void {
     emitTenantEvent(p.organizationId, 'lead:created', p);
   });
 
+  eventBus.on('lead.deleted', (p) => {
+    emitTenantEvent(p.organizationId, 'lead:deleted', p);
+  });
+
   eventBus.on('lead.score_updated', (p) => {
     emitTenantEvent(p.organizationId, 'lead:score_updated', p);
   });

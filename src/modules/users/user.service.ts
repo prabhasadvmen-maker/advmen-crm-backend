@@ -5,8 +5,10 @@ import { AuthenticatedUser } from '../../middleware/auth.middleware.js';
 import { AppError } from '../../shared/errors/AppError.js';
 import { USER_ROLES, ROLE_DEFAULT_PERMISSIONS, UserRole } from '../../config/constants.js';
 import { normalizeEmail } from '../../shared/utils/normalize.js';
-import { IUser } from '../auth/auth.model.js';
+import { UserModel, IUser } from '../auth/auth.model.js';
 import { LeadModel } from '../leads/lead.model.js';
+import { EmployeeCounterModel } from './employeeCounter.model.js';
+import { logger } from '../../shared/logger/logger.js';
 
 export class UserService {
   private sanitizeUser(user: IUser) {
@@ -95,35 +97,160 @@ export class UserService {
     }
 
     // 3. Resolve Organization ID
-    const targetOrgId = isSuperAdmin && input.organizationId ? input.organizationId : requester.organizationId;
+    const targetOrgId =
+      (isSuperAdmin && input.organizationId ? input.organizationId : requester.organizationId) ||
+      'org_advmen_platform';
 
     // 4. Hash password
     const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(input.password || 'SalesOS2026!Secure', salt);
+    const passwordHash = await bcrypt.hash(input.password, salt);
 
     const role = (input.role as UserRole) || USER_ROLES.SALES_REP;
     const permissions = ROLE_DEFAULT_PERMISSIONS[role] || [];
+    
+    let employeeId: string | undefined = undefined;
+    if (role !== USER_ROLES.SUPER_ADMIN) {
+      // 1. Attempt to register directly on external Attendance App so employee can immediately login there
+      try {
+        const extSignup = await fetch('https://atendence-crm.vercel.app/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: input.name.trim(),
+            email: input.email.trim().toLowerCase(),
+            password: input.password,
+          }),
+          signal: AbortSignal.timeout(6000),
+        });
 
-    // 5. Create user in database
-    const newUser = await userRepository.create({
-      organizationId: targetOrgId,
-      name: input.name.trim(),
-      email: input.email.trim(),
-      normalizedEmail,
-      passwordHash,
-      role,
-      permissions,
-      department: input.department?.trim() || 'General Sales',
-      phone: input.phone?.trim(),
-      avatarUrl: input.avatarUrl || undefined,
-      isActive: true,
-      isEmailVerified: true,
-    });
+        if (extSignup.ok) {
+          const extJson = (await extSignup.json()) as any;
+          if (extJson && extJson.success && extJson.empId) {
+            employeeId = extJson.empId;
+            logger.info(`✅ Employee synced to Attendance CRM with ID: ${employeeId}`);
+          }
+        }
+      } catch (extErr: any) {
+        logger.warn('Attendance CRM employee signup note:', extErr.message);
+      }
+
+      // Check if employeeId from external is already taken in our DB
+      if (employeeId) {
+        const existingUserWithId = await UserModel.findOne({ employeeId });
+        if (existingUserWithId) {
+          employeeId = await this.generateEmployeeId();
+        }
+      } else {
+        employeeId = await this.generateEmployeeId();
+      }
+    }
+
+    // 5. Create user in database with robust retry on employeeId collision
+    let newUser: IUser | null = null;
+    let attempts = 0;
+    while (!newUser && attempts < 3) {
+      attempts++;
+      try {
+        newUser = await userRepository.create({
+          organizationId: targetOrgId,
+          name: input.name.trim(),
+          email: input.email.trim(),
+          normalizedEmail,
+          passwordHash,
+          employeeId,
+          role,
+          permissions,
+          department: input.department?.trim() || 'General Sales',
+          phone: input.phone?.trim(),
+          avatarUrl: input.avatarUrl || undefined,
+          isActive: true,
+          isEmailVerified: true,
+        });
+      } catch (dbErr: any) {
+        const isDuplicate = dbErr?.code === 11000 || dbErr?.message?.includes('E11000');
+        const isEmpIdDup =
+          dbErr?.keyPattern?.employeeId ||
+          dbErr?.message?.includes('employeeId') ||
+          dbErr?.keyValue?.employeeId;
+        const isEmailDup =
+          dbErr?.keyPattern?.normalizedEmail ||
+          dbErr?.keyPattern?.email ||
+          dbErr?.message?.includes('normalizedEmail') ||
+          dbErr?.message?.includes('email_1');
+
+        if (isDuplicate && isEmpIdDup && attempts < 3) {
+          logger.warn(`Employee ID collision detected (${employeeId}), generating a fresh unique ID...`);
+          employeeId = await this.generateEmployeeId();
+          continue;
+        }
+
+        if (isDuplicate && isEmailDup) {
+          throw AppError.conflict(`An account with email '${input.email}' already exists.`);
+        }
+
+        if (isDuplicate) {
+          throw AppError.conflict('An account with these unique credentials already exists.');
+        }
+
+        throw dbErr;
+      }
+    }
+
+    if (!newUser) {
+      throw AppError.internal('Failed to generate a unique employee record after multiple attempts.');
+    }
 
     return {
       ...this.sanitizeUser(newUser),
       assignedLeadsCount: 0,
     };
+  }
+
+  private async generateEmployeeId(): Promise<string> {
+    const year = new Date().getFullYear();
+    try {
+      for (let attempts = 0; attempts < 25; attempts++) {
+        const counter = await EmployeeCounterModel.findOneAndUpdate(
+          { _id: `employee-${year}` },
+          { $inc: { sequence: 1 }, $setOnInsert: { _id: `employee-${year}` } },
+          { new: true, upsert: true }
+        );
+
+        if (counter && counter.sequence) {
+          const candidate = `EMP-${year}-${String(counter.sequence).padStart(4, '0')}`;
+          const exists = await UserModel.findOne({ employeeId: candidate });
+          if (!exists) {
+            return candidate;
+          }
+        }
+      }
+    } catch (counterErr: any) {
+      logger.warn('Atomic counter lookup note:', counterErr?.message);
+    }
+
+    // Direct highest sequence scan from UserModel
+    try {
+      const highestUser = await UserModel.findOne({
+        employeeId: new RegExp(`^EMP-${year}-\\d+$`),
+      }).sort({ employeeId: -1 });
+
+      if (highestUser && highestUser.employeeId) {
+        const parts = highestUser.employeeId.split('-');
+        const lastSeq = parseInt(parts[parts.length - 1], 10);
+        if (!isNaN(lastSeq)) {
+          const candidate = `EMP-${year}-${String(lastSeq + 1).padStart(4, '0')}`;
+          const exists = await UserModel.findOne({ employeeId: candidate });
+          if (!exists) {
+            return candidate;
+          }
+        }
+      }
+    } catch (scanErr: any) {
+      logger.warn('UserModel scan lookup note:', scanErr?.message);
+    }
+
+    // Guaranteed collision-free fallback
+    return `EMP-${year}-${Date.now().toString().slice(-4)}`;
   }
 
   async updateUser(requester: AuthenticatedUser, id: string, input: UpdateUserInput): Promise<any> {
