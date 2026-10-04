@@ -419,7 +419,10 @@ export class AuthService {
     });
 
     const clientUrl = (env.CLIENT_URL || 'http://localhost:3000').replace(/\/$/, '');
-    const targetDashboard = data.target || '/employee';
+    const userRole = ((user.role || '') as string).toUpperCase().replace(/-/g, '_').trim();
+    const isSuperAdmin = userRole === 'SUPER_ADMIN' || userRole === 'SUPERADMIN';
+    // STRICT RULE: All non-super-admin staff/employees MUST go to /employee
+    const targetDashboard = isSuperAdmin ? '/admin/dashboard' : '/employee';
     const redirectUrl = `${clientUrl}/auth/sso?token=${encodeURIComponent(tokens.accessToken)}&refreshToken=${encodeURIComponent(tokens.refreshToken)}&target=${encodeURIComponent(targetDashboard)}`;
 
     return {
@@ -503,9 +506,35 @@ export class AuthService {
       throw AppError.badRequest('SSO token payload does not contain an employee ID or email.');
     }
 
-    const user = await authRepository.findByIdentifierGlobal(identifier);
+    let user = await authRepository.findByIdentifierGlobal(identifier);
+
+    // If not found by primary identifier, check alternate candidate fields
     if (!user) {
-      throw AppError.notFound(`No employee account found for identity '${identifier}'.`);
+      const candidates = [decoded.email, decoded.employeeId, decoded.empId, decoded.userId].filter(Boolean);
+      for (const candidate of candidates) {
+        user = await authRepository.findByIdentifierGlobal(String(candidate).trim());
+        if (user) break;
+      }
+    }
+
+    // Auto-provision employee account if verified token from Attendance App
+    if (!user) {
+      const empId = (decoded.employeeId || decoded.empId || identifier).toString().trim().toUpperCase();
+      const userEmail = (decoded.email || `${empId.toLowerCase().replace(/[^a-z0-9]/g, '')}@advmen.local`).toLowerCase().trim();
+      const userName = decoded.name || decoded.employeeName || `Employee (${empId})`;
+      user = await UserModel.create({
+        name: userName,
+        email: userEmail,
+        normalizedEmail: userEmail,
+        employeeId: empId,
+        department: decoded.department || 'Direct Sales & Outreach',
+        role: USER_ROLES.SALES_REP,
+        organizationId: 'org_advmen_platform',
+        isActive: true,
+        isEmailVerified: true,
+        permissions: ROLE_DEFAULT_PERMISSIONS[USER_ROLES.SALES_REP],
+        passwordHash: await bcrypt.hash('Advmen@2026', 10),
+      });
     }
 
     if (!user.isActive) {
@@ -523,9 +552,12 @@ export class AuthService {
       lastLoginAt: new Date(),
     });
 
-    const isEmployeeRole = user.role === USER_ROLES.SALES_REP;
-    const defaultTarget = isEmployeeRole ? '/employee' : '/admin';
-    const redirectUrl = target || defaultTarget;
+    const userRole = ((user.role || decoded.role || '') as string).toUpperCase().replace(/-/g, '_').trim();
+    const isSuperAdmin = userRole === 'SUPER_ADMIN' || userRole === 'SUPERADMIN';
+    const finalRole: UserRole = isSuperAdmin ? USER_ROLES.SUPER_ADMIN : USER_ROLES.SALES_REP;
+
+    // STRICT: Super Admin goes to /admin/dashboard, ALL employees go to /employee
+    const redirectUrl = isSuperAdmin ? '/admin/dashboard' : '/employee';
 
     return {
       accessToken: tokens.accessToken,
@@ -536,14 +568,14 @@ export class AuthService {
         name: user.name,
         email: user.email,
         employeeId: user.employeeId,
-        role: user.role,
+        role: finalRole,
         department: user.department,
         organizationId: orgId,
         organizationName: org?.name || 'ADVMEN Workspace',
         avatarUrl: user.avatarUrl || (user as any).avatar,
         permissions: Array.from(
           new Set([
-            ...(ROLE_DEFAULT_PERMISSIONS[user.role] || []),
+            ...(ROLE_DEFAULT_PERMISSIONS[finalRole] || []),
             ...(user.permissions || []),
           ])
         ),

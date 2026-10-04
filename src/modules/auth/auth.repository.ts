@@ -14,12 +14,21 @@ export class AuthRepository extends BaseTenantRepository<IUser> {
     const normalized = raw.toLowerCase();
     const digitsOnly = raw.replace(/\D/g, '');
 
+    const escapedRaw = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const alphanumeric = raw.replace(/[^a-zA-Z0-9]/g, '');
+
     const queryConditions: any[] = [
       { normalizedEmail: normalized },
       { email: raw },
+      { email: { $regex: new RegExp(`^${escapedRaw}$`, 'i') } },
       { phone: raw },
       { employeeId: raw.toUpperCase() },
+      { employeeId: { $regex: new RegExp(`^${escapedRaw}$`, 'i') } },
     ];
+
+    if (alphanumeric.length >= 2) {
+      queryConditions.push({ employeeId: { $regex: new RegExp(alphanumeric, 'i') } });
+    }
 
     if (digitsOnly.length >= 7) {
       queryConditions.push({ phone: digitsOnly });

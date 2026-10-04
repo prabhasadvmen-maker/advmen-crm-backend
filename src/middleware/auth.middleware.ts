@@ -32,7 +32,7 @@ export function authMiddleware(req: Request, _res: Response, next: NextFunction)
   const authHeader = req.headers.authorization;
   const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
   const cookieToken = req.cookies?.accessToken as string | undefined;
-  const tokens = [...new Set([cookieToken, bearerToken].filter((token): token is string => Boolean(token)))];
+  const tokens = [...new Set([bearerToken, cookieToken].filter((token): token is string => Boolean(token)))];
 
   if (tokens.length === 0) {
     next(AppError.unauthorized('Authentication token missing'));
