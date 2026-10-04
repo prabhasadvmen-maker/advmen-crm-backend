@@ -15,6 +15,7 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   COOKIE_SECRET: z.string().default('advmen_cookie_secure_signature_secret_key_2026'),
+  SSO_SHARED_SECRET: z.string().default('advmen_sso_shared_secret_2026_key_secure_99'),
 
   SUPER_ADMIN_EMAIL: z.string().optional().default(''),
   SUPER_ADMIN_PASSWORD: z.string().optional().default(''),

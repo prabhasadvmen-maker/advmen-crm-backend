@@ -17,3 +17,5 @@ authRouter.post('/reset-password', validateRequest({ body: ResetPasswordSchema }
 // Attendance CRM SSO & Instant Redirect
 authRouter.post('/attendance-sso', authController.attendanceSso);
 authRouter.get('/attendance-redirect', authController.attendanceRedirect);
+authRouter.post('/verify-sso', authController.verifySso);
+authRouter.get('/verify-sso', authController.verifySso);

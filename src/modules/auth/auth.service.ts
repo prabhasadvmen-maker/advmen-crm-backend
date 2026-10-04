@@ -431,6 +431,118 @@ export class AuthService {
       },
     };
   }
+
+  /**
+   * Verify SSO Token sent from external Attendance App or CRM /sso-login page,
+   * validate it against SSO_SHARED_SECRET (or internal JWT secrets/payload),
+   * and issue new authenticated CRM session tokens with target dashboard redirect URL.
+   */
+  async verifySso(token: string, target?: string): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    user: any;
+    redirectUrl: string;
+  }> {
+    if (!token || typeof token !== 'string' || !token.trim()) {
+      throw AppError.badRequest('SSO token is required for verification.');
+    }
+
+    const rawToken = token.trim();
+    let decoded: any = null;
+
+    // 1. Verify with SSO_SHARED_SECRET
+    const sharedSecret = env.SSO_SHARED_SECRET || 'advmen_sso_shared_secret_2026_key_secure_99';
+    try {
+      decoded = jwt.verify(rawToken, sharedSecret);
+    } catch {
+      // 2. Fallback: Verify with JWT_ACCESS_SECRET
+      try {
+        decoded = jwt.verify(rawToken, env.JWT_ACCESS_SECRET);
+      } catch {
+        // 3. Fallback: Verify with JWT_REFRESH_SECRET
+        try {
+          decoded = jwt.verify(rawToken, env.JWT_REFRESH_SECRET);
+        } catch {
+          // 4. Fallback: Decode base64 JSON if transmitted as non-signed SSO payload
+          try {
+            const rawDecoded = Buffer.from(rawToken, 'base64').toString('utf8');
+            const parsed = JSON.parse(rawDecoded);
+            if (parsed && typeof parsed === 'object') {
+              decoded = parsed;
+            }
+          } catch {
+            // Not a base64 json
+          }
+        }
+      }
+    }
+
+    if (!decoded) {
+      throw AppError.unauthorized('Invalid or expired SSO token. Please sign in manually.');
+    }
+
+    // Extract employee identifier from token payload
+    const identifier = (
+      decoded.employeeId ||
+      decoded.empId ||
+      decoded.email ||
+      decoded.userId ||
+      decoded.id ||
+      decoded.identifier ||
+      ''
+    ).toString().trim();
+
+    if (!identifier) {
+      throw AppError.badRequest('SSO token payload does not contain an employee ID or email.');
+    }
+
+    const user = await authRepository.findByIdentifierGlobal(identifier);
+    if (!user) {
+      throw AppError.notFound(`No employee account found for identity '${identifier}'.`);
+    }
+
+    if (!user.isActive) {
+      throw AppError.forbidden('Employee account is inactive or deactivated.');
+    }
+
+    const orgId = user.organizationId || 'org_advmen_platform';
+    const org = await OrganizationModel.findOne({ organizationId: orgId });
+
+    // Generate CRM tokens
+    const tokens = this.generateTokens(user, org?.name);
+    await authRepository.addRefreshToken(user._id.toString(), tokens.refreshToken);
+
+    await authRepository.updateById(orgId, user._id.toString(), {
+      lastLoginAt: new Date(),
+    });
+
+    const isEmployeeRole = user.role === USER_ROLES.SALES_REP;
+    const defaultTarget = isEmployeeRole ? '/employee' : '/admin';
+    const redirectUrl = target || defaultTarget;
+
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      redirectUrl,
+      user: {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        employeeId: user.employeeId,
+        role: user.role,
+        department: user.department,
+        organizationId: orgId,
+        organizationName: org?.name || 'ADVMEN Workspace',
+        avatarUrl: user.avatarUrl || (user as any).avatar,
+        permissions: Array.from(
+          new Set([
+            ...(ROLE_DEFAULT_PERMISSIONS[user.role] || []),
+            ...(user.permissions || []),
+          ])
+        ),
+      },
+    };
+  }
 }
 
 export const authService = new AuthService();

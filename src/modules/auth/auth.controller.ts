@@ -160,6 +160,30 @@ export class AuthController {
 
     res.redirect(result.redirectUrl);
   }
+
+  async verifySso(req: Request, res: Response): Promise<void> {
+    const token = (req.body?.token || req.query?.token || req.headers['x-sso-token']) as string;
+    const target = (req.body?.target || req.query?.target) as string;
+
+    const result = await authService.verifySso(token, target);
+
+    // Set secure HTTP-only cookies
+    res.cookie('accessToken', result.accessToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.cookie('refreshToken', result.refreshToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    ApiResponse.success(res, result, 200, undefined, 'SSO verification successful');
+  }
 }
 
 export const authController = new AuthController();
