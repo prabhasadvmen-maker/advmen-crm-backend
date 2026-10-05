@@ -79,9 +79,11 @@ export class AuthController {
     const userId = req.user?.id;
     const organizationId = req.user?.organizationId;
     const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const logoutBy = isSuperAdmin ? 'ADMIN' : 'EMPLOYEE';
 
     if (userId) {
-      await authService.logout(userId, refreshToken, organizationId);
+      await authService.logout(userId, refreshToken, organizationId, logoutBy, req.user?.name);
     }
 
     res.clearCookie('accessToken', {
@@ -95,6 +97,42 @@ export class AuthController {
       sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
     });
     ApiResponse.success(res, { loggedOut: true }, 200, undefined, 'Logged out successfully');
+  }
+
+  async impersonateEmployee(req: Request, res: Response): Promise<void> {
+    const adminUser = req.user;
+    if (!adminUser) throw AppError.unauthorized('Authentication required');
+    const { userId } = req.body;
+    if (!userId) throw AppError.badRequest('Employee userId is required');
+
+    const result = await authService.impersonateEmployee(adminUser, userId);
+
+    // Set secure HTTP-only cookies for the employee session
+    res.cookie('accessToken', result.accessToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.cookie('refreshToken', result.refreshToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    ApiResponse.success(res, result, 200, undefined, `Logged in as employee '${result.user.name}'`);
+  }
+
+  async forceLogoutEmployee(req: Request, res: Response): Promise<void> {
+    const adminUser = req.user;
+    if (!adminUser) throw AppError.unauthorized('Authentication required');
+    const { userId } = req.body;
+    if (!userId) throw AppError.badRequest('Employee userId is required');
+
+    const result = await authService.forceLogoutEmployee(adminUser, userId);
+    ApiResponse.success(res, result, 200, undefined, result.message);
   }
 
   async getMe(req: Request, res: Response): Promise<void> {

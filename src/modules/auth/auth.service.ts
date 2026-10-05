@@ -14,6 +14,7 @@ import { OrganizationModel } from '../organizations/organization.model.js';
 import { IUser, UserModel } from './auth.model.js';
 import { attendanceService } from '../attendance/attendance.service.js';
 import { logger } from '../../shared/logger/logger.js';
+import { emitTenantEvent } from '../../config/socket.js';
 
 export interface AuthTokens {
   accessToken: string;
@@ -296,9 +297,15 @@ export class AuthService {
   /**
    * Invalidate refresh token on logout and record punch-out for attendance
    */
-  async logout(userId: string, refreshToken?: string, organizationId?: string): Promise<void> {
+  async logout(
+    userId: string,
+    refreshToken?: string,
+    organizationId?: string,
+    logoutBy: 'ADMIN' | 'EMPLOYEE' | 'SYSTEM' = 'EMPLOYEE',
+    adminName?: string
+  ): Promise<void> {
     if (organizationId) {
-      await attendanceService.recordLogout(organizationId, userId).catch((err: any) => {
+      await attendanceService.recordLogout(organizationId, userId, logoutBy, adminName).catch((err: any) => {
         logger.warn(`Attendance logout recording note: ${err?.message || String(err)}`);
       });
     }
@@ -307,6 +314,138 @@ export class AuthService {
     } else {
       await authRepository.clearAllRefreshTokens(userId);
     }
+  }
+
+  /**
+   * Admin direct login / impersonation into Employee Workspace
+   */
+  async impersonateEmployee(
+    adminUser: { id: string; role: string; name: string; organizationId: string },
+    targetUserId: string
+  ): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    user: any;
+    redirectUrl: string;
+    impersonated: boolean;
+    adminName: string;
+  }> {
+    const isSuperAdmin = adminUser.role === USER_ROLES.SUPER_ADMIN;
+    const isOrgAdmin = adminUser.role === USER_ROLES.ORG_ADMIN;
+    if (!isSuperAdmin && !isOrgAdmin) {
+      throw AppError.forbidden('Only administrators can sign in to employee workspaces.');
+    }
+
+    const targetUser = await UserModel.findById(targetUserId);
+    if (!targetUser) {
+      throw AppError.notFound('Employee account not found.');
+    }
+
+    if (!isSuperAdmin && targetUser.organizationId !== adminUser.organizationId) {
+      throw AppError.forbidden('Unauthorized access to employee in another workspace.');
+    }
+
+    if (!targetUser.isActive) {
+      throw AppError.forbidden('This employee account is deactivated.');
+    }
+
+    const orgId = targetUser.organizationId || adminUser.organizationId || 'org_advmen_platform';
+    const org = await OrganizationModel.findOne({ organizationId: orgId });
+
+    // Generate tokens for employee
+    const tokens = this.generateTokens(targetUser, org?.name);
+    await authRepository.addRefreshToken(targetUser._id.toString(), tokens.refreshToken);
+
+    // Record login in attendance
+    await attendanceService.recordLogin({
+      userId: targetUser._id.toString(),
+      employeeId: targetUser.employeeId,
+      name: targetUser.name,
+      email: targetUser.email,
+      phone: targetUser.phone,
+      role: targetUser.role,
+      department: targetUser.department,
+      organizationId: orgId,
+      userAgent: 'Admin Impersonation Direct Login',
+    }).catch(() => {});
+
+    logger.info(`👑 Admin '${adminUser.name}' directly logged in as Employee '${targetUser.name}' (${targetUser.employeeId || targetUser._id})`);
+
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      redirectUrl: '/employee',
+      impersonated: true,
+      adminName: adminUser.name,
+      user: {
+        id: targetUser._id.toString(),
+        name: targetUser.name,
+        email: targetUser.email,
+        employeeId: targetUser.employeeId,
+        role: targetUser.role === USER_ROLES.SUPER_ADMIN ? USER_ROLES.SUPER_ADMIN : USER_ROLES.SALES_REP,
+        department: targetUser.department,
+        organizationId: orgId,
+        organizationName: org?.name || 'ADVMEN Workspace',
+        avatarUrl: targetUser.avatarUrl || (targetUser as any).avatar,
+        permissions: Array.from(
+          new Set([
+            ...(ROLE_DEFAULT_PERMISSIONS[targetUser.role] || []),
+            ...(targetUser.permissions || []),
+          ])
+        ),
+      },
+    };
+  }
+
+  /**
+   * Admin remotely terminates an employee's active session and marks punch-out as 'ADMIN' in Attendance
+   */
+  async forceLogoutEmployee(
+    adminUser: { id: string; role: string; name: string; organizationId: string },
+    targetUserId: string
+  ): Promise<{ success: boolean; message: string; record: any }> {
+    const isSuperAdmin = adminUser.role === USER_ROLES.SUPER_ADMIN;
+    const isOrgAdmin = adminUser.role === USER_ROLES.ORG_ADMIN;
+    if (!isSuperAdmin && !isOrgAdmin) {
+      throw AppError.forbidden('Only administrators can remotely logout employees.');
+    }
+
+    const targetUser = await UserModel.findById(targetUserId);
+    if (!targetUser) {
+      throw AppError.notFound('Employee account not found.');
+    }
+
+    if (!isSuperAdmin && targetUser.organizationId !== adminUser.organizationId) {
+      throw AppError.forbidden('Unauthorized access to employee in another workspace.');
+    }
+
+    const orgId = targetUser.organizationId || adminUser.organizationId || 'org_advmen_platform';
+
+    // 1. Invalidate all refresh tokens for this employee
+    await authRepository.clearAllRefreshTokens(targetUserId);
+
+    // 2. Record punch out in attendance with attribution = 'ADMIN'
+    const record = await attendanceService.recordLogout(orgId, targetUserId, 'ADMIN', adminUser.name);
+
+    // 3. Emit real-time socket force-logout event
+    try {
+      emitTenantEvent(orgId, 'auth:force-logout', {
+        userId: targetUserId,
+        employeeName: targetUser.name,
+        adminName: adminUser.name,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      logger.warn('Socket force-logout broadcast skipped:', err.message);
+    }
+
+    logger.info(`🔒 Admin '${adminUser.name}' remotely logged out Employee '${targetUser.name}' (${targetUser.employeeId || targetUser._id})`);
+
+    return {
+      success: true,
+      message: `Employee '${targetUser.name}' has been remotely logged out. Punch-out marked by Admin in attendance.`,
+      record,
+    };
   }
 
   /**

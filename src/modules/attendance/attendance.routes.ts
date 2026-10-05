@@ -16,5 +16,8 @@ attendanceRouter.post('/punch-out', attendanceController.punchOut);
 // Administrator route: view employee attendance and login history
 attendanceRouter.get('/', attendanceController.getAttendanceList);
 
+// Administrator route: force logout / punch out an employee
+attendanceRouter.post('/force-logout', attendanceController.adminForceLogout);
+
 // Administrator route: manual sync with external attendance app
 attendanceRouter.post('/sync', attendanceController.syncExternalAttendance);

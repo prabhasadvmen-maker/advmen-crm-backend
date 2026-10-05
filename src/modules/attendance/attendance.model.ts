@@ -2,9 +2,13 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export type AttendanceStatus = 'PRESENT' | 'LATE' | 'HALF_DAY' | 'ON_LEAVE';
 
+export type LogoutActor = 'ADMIN' | 'EMPLOYEE' | 'SYSTEM';
+
 export interface IAttendanceLoginEvent {
   loginTime: Date;
   logoutTime?: Date;
+  logoutBy?: LogoutActor;
+  logoutAdminName?: string;
   ipAddress?: string;
   userAgent?: string;
 }
@@ -22,6 +26,8 @@ export interface IAttendance extends Document {
   loginTime: Date; // Punch-in time
   lastActiveAt: Date;
   logoutTime?: Date;
+  logoutBy?: LogoutActor;
+  logoutAdminName?: string;
   loginEvents: IAttendanceLoginEvent[];
   status: AttendanceStatus;
   selfieUrl?: string;
@@ -45,6 +51,8 @@ const AttendanceLoginEventSchema = new Schema<IAttendanceLoginEvent>(
   {
     loginTime: { type: Date, required: true },
     logoutTime: { type: Date },
+    logoutBy: { type: String, enum: ['ADMIN', 'EMPLOYEE', 'SYSTEM'] },
+    logoutAdminName: { type: String, trim: true },
     ipAddress: { type: String },
     userAgent: { type: String },
   },
@@ -108,6 +116,14 @@ const AttendanceSchema = new Schema<IAttendance>(
     },
     logoutTime: {
       type: Date,
+    },
+    logoutBy: {
+      type: String,
+      enum: ['ADMIN', 'EMPLOYEE', 'SYSTEM'],
+    },
+    logoutAdminName: {
+      type: String,
+      trim: true,
     },
     loginEvents: {
       type: [AttendanceLoginEventSchema],

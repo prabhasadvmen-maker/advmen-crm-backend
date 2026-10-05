@@ -610,23 +610,65 @@ export class AttendanceService {
   }
 
   /**
-   * Record employee punch-out
+   * Record employee punch-out / logout with actor attribution (ADMIN or EMPLOYEE)
    */
-  async recordLogout(organizationId: string, userId: string): Promise<IAttendance | null> {
+  async recordLogout(
+    organizationId: string,
+    userId: string,
+    logoutBy: 'ADMIN' | 'EMPLOYEE' | 'SYSTEM' = 'EMPLOYEE',
+    adminName?: string
+  ): Promise<IAttendance | null> {
     const today = this.getTodayDateString();
-    const record = await AttendanceModel.findOne({
+    let record = await AttendanceModel.findOne({
       organizationId,
       userId,
       date: today,
     }).sort({ loginTime: -1 });
+
+    if (!record) {
+      record = await AttendanceModel.findOne({
+        organizationId,
+        userId,
+        logoutTime: { $exists: false },
+      }).sort({ loginTime: -1 });
+    }
     if (!record) return null;
 
+    const now = new Date();
     const activeEvent = [...record.loginEvents].reverse().find((event) => !event.logoutTime);
     if (activeEvent) {
-      activeEvent.logoutTime = new Date();
-      record.logoutTime = activeEvent.logoutTime;
-      await record.save();
+      activeEvent.logoutTime = now;
+      activeEvent.logoutBy = logoutBy;
+      activeEvent.logoutAdminName = adminName;
     }
+    record.logoutTime = now;
+    record.logoutBy = logoutBy;
+    record.logoutAdminName = adminName;
+    await record.save();
+
+    try {
+      emitTenantEvent(organizationId, 'attendance:logout', {
+        id: record._id.toString(),
+        userId: record.userId,
+        userName: record.userName,
+        logoutTime: now,
+        logoutBy,
+        logoutAdminName: adminName,
+      });
+
+      emitTenantEvent(organizationId, 'notification:new', {
+        id: `att_logout_${Date.now()}`,
+        type: 'attendance',
+        title: `Employee Punch Out: ${record.userName}`,
+        message: `${record.userName} logged out by ${logoutBy === 'ADMIN' ? `Admin (${adminName || 'Super Admin'})` : 'Employee'} at ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+        severity: 'info',
+        link: '/attendance',
+        timestamp: now.toISOString(),
+      });
+    } catch (e: any) {
+      logger.warn('Socket broadcast for attendance logout note:', e.message);
+    }
+
     return record;
   }
 }

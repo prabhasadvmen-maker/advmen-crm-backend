@@ -54,11 +54,45 @@ export class AttendanceController {
    */
   async punchOut(req: Request, res: Response): Promise<void> {
     const user = (req as any).user as AuthenticatedUser;
-    const updated = await attendanceService.recordLogout(user.organizationId, user.id);
+    const isSuperAdmin = user.role === 'SUPER_ADMIN';
+    const updated = await attendanceService.recordLogout(
+      user.organizationId,
+      user.id,
+      isSuperAdmin ? 'ADMIN' : 'EMPLOYEE',
+      user.name
+    );
 
     res.status(200).json({
       success: true,
       message: 'Punch-out recorded successfully',
+      record: updated,
+    });
+  }
+
+  /**
+   * POST /api/v1/attendance/force-logout
+   * Admin forces punch-out / logout for an employee
+   */
+  async adminForceLogout(req: Request, res: Response): Promise<void> {
+    const adminUser = (req as any).user as AuthenticatedUser;
+    if (adminUser.role !== 'SUPER_ADMIN' && adminUser.role !== 'ORG_ADMIN') {
+      throw AppError.forbidden('Only administrators can force logout employees');
+    }
+    const { userId } = req.body;
+    if (!userId) {
+      throw AppError.badRequest('Target userId is required to force logout employee');
+    }
+
+    const updated = await attendanceService.recordLogout(
+      adminUser.organizationId,
+      userId,
+      'ADMIN',
+      adminUser.name
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Employee logged out by Administrator and attendance record updated.',
       record: updated,
     });
   }
