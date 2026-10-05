@@ -14,6 +14,7 @@ export interface IUser extends Document {
   department?: string;
   phone?: string;
   employeeId?: string;
+  empId?: string;
   isActive: boolean;
   isEmailVerified: boolean;
   refreshTokens: string[];
@@ -93,6 +94,14 @@ const UserSchema = new Schema<IUser>(
       type: String,
       trim: true,
       uppercase: true,
+    },
+    empId: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: function (this: any) {
+        return this.employeeId;
+      },
     },
     isActive: {
       type: Boolean,

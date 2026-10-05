@@ -158,6 +158,7 @@ export class UserService {
           normalizedEmail,
           passwordHash,
           employeeId,
+          empId: employeeId,
           role,
           permissions,
           department: input.department?.trim() || 'General Sales',
@@ -170,8 +171,11 @@ export class UserService {
         const isDuplicate = dbErr?.code === 11000 || dbErr?.message?.includes('E11000');
         const isEmpIdDup =
           dbErr?.keyPattern?.employeeId ||
+          dbErr?.keyPattern?.empId ||
           dbErr?.message?.includes('employeeId') ||
-          dbErr?.keyValue?.employeeId;
+          dbErr?.message?.includes('empId') ||
+          dbErr?.keyValue?.employeeId ||
+          dbErr?.keyValue?.empId;
         const isEmailDup =
           dbErr?.keyPattern?.normalizedEmail ||
           dbErr?.keyPattern?.email ||
@@ -180,6 +184,15 @@ export class UserService {
 
         if (isDuplicate && isEmpIdDup && attempts < 3) {
           logger.warn(`Employee ID collision detected (${employeeId}), generating a fresh unique ID...`);
+          // If legacy empId_1 index caused this, safely drop it
+          if (dbErr?.message?.includes('empId_1')) {
+            try {
+              await UserModel.collection.dropIndex('empId_1');
+              logger.info('Auto-dropped legacy empId_1 index on retry.');
+            } catch {
+              // Ignore drop error
+            }
+          }
           employeeId = await this.generateEmployeeId();
           continue;
         }
@@ -189,7 +202,12 @@ export class UserService {
         }
 
         if (isDuplicate) {
-          throw AppError.conflict('An account with these unique credentials already exists.');
+          logger.warn(`Duplicate key conflict during user creation: ${dbErr?.message}`);
+          throw AppError.conflict(
+            dbErr?.message?.includes('email')
+              ? `An account with email '${input.email}' already exists.`
+              : 'An account with these unique credentials already exists. Please verify details.'
+          );
         }
 
         throw dbErr;

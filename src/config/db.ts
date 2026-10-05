@@ -27,6 +27,22 @@ export async function connectDB(): Promise<void> {
     isConnected = true;
     const dbType = isAtlas ? 'MongoDB Atlas Cluster' : 'MongoDB';
     logger.info(`✅ ${dbType} Connected Successfully: ${conn.connection.host}/${conn.connection.name}`);
+
+    // Drop legacy rogue indexes on users collection that cause duplicate null key collisions
+    try {
+      const usersCol = conn.connection.db?.collection('users');
+      if (usersCol) {
+        const existingIndexes = await usersCol.indexes();
+        for (const idx of existingIndexes) {
+          if (idx.name && (idx.name === 'empId_1' || (idx.key && (idx.key as any).empId))) {
+            logger.info(`🧹 Dropping legacy rogue index: ${idx.name}`);
+            await usersCol.dropIndex(idx.name).catch(() => {});
+          }
+        }
+      }
+    } catch {
+      // Safe to ignore if collection doesn't exist yet
+    }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     const dbType = isAtlas ? 'MongoDB Atlas' : 'MongoDB';
