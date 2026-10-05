@@ -21,3 +21,9 @@ attendanceRouter.post('/force-logout', attendanceController.adminForceLogout);
 
 // Administrator route: manual sync with external attendance app
 attendanceRouter.post('/sync', attendanceController.syncExternalAttendance);
+
+// Administrator route: clear all attendance records
+attendanceRouter.delete('/clear-all', attendanceController.clearAll);
+
+// Administrator route: delete a single attendance record by ID
+attendanceRouter.delete('/:id', attendanceController.deleteRecord);

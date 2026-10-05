@@ -110,19 +110,10 @@ export class LeadService {
       requirement: leadData.requirement,
     });
 
-    // Auto-assignment if no owner provided
+    // Assignment only if owner explicitly provided
     let assignedTo = leadData.assignedTo;
     let ownerId = leadData.ownerId;
-    let status = leadData.status || 'NEW';
-
-    if (!ownerId) {
-      const nextOwner = await this.getNextRoundRobinOwner(organizationId);
-      if (nextOwner) {
-        ownerId = nextOwner.id;
-        assignedTo = nextOwner;
-        status = 'ASSIGNED';
-      }
-    }
+    let status = leadData.status || (ownerId ? 'ASSIGNED' : 'NEW');
 
     const createdLead = await leadRepository.create(organizationId, {
       ...leadData,
@@ -190,7 +181,6 @@ export class LeadService {
       const empOr = [
         { ownerId: requestingUser.id },
         { 'assignedTo.id': requestingUser.id },
-        { 'assignedTo.name': requestingUser.name },
       ];
       if (filter.$or) {
         filter.$and = [{ $or: filter.$or }, { $or: empOr }];

@@ -111,6 +111,51 @@ export class AttendanceController {
       syncedCount: result.syncedCount,
     });
   }
+
+  /**
+   * DELETE /api/v1/attendance/:id
+
+   * Admin deletes a single attendance record
+   */
+  async deleteRecord(req: Request, res: Response): Promise<void> {
+    const user = (req as any).user as AuthenticatedUser;
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ORG_ADMIN') {
+      throw AppError.forbidden('Only administrators can delete attendance records');
+    }
+    const { id } = req.params;
+    if (!id) {
+      throw AppError.badRequest('Record ID is required');
+    }
+
+    const isSuperAdmin = user.role === 'SUPER_ADMIN';
+    const deleted = await attendanceService.deleteAttendanceRecord(user.organizationId, id, isSuperAdmin);
+
+    res.status(200).json({
+      success: true,
+      message: deleted ? 'Attendance record deleted successfully' : 'Record not found or already deleted',
+    });
+  }
+
+  /**
+   * DELETE /api/v1/attendance/clear-all
+   * Admin wipes all attendance records
+   */
+  async clearAll(req: Request, res: Response): Promise<void> {
+    const user = (req as any).user as AuthenticatedUser;
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ORG_ADMIN') {
+      throw AppError.forbidden('Only administrators can clear all attendance records');
+    }
+
+    const isSuperAdmin = user.role === 'SUPER_ADMIN';
+    const deletedCount = await attendanceService.clearAllAttendance(user.organizationId, isSuperAdmin);
+
+    res.status(200).json({
+      success: true,
+      message: `Successfully cleared all ${deletedCount} attendance records`,
+      deletedCount,
+    });
+  }
 }
 
 export const attendanceController = new AttendanceController();
+

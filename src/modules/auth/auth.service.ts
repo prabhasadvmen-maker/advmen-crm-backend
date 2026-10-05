@@ -439,6 +439,34 @@ export class AuthService {
       logger.warn('Socket force-logout broadcast skipped:', err.message);
     }
 
+    // 4. Synchronize remote logout to external Attendance CRM app (atendence-crm.vercel.app)
+    try {
+      const extPayload = {
+        empId: targetUser.employeeId,
+        employeeId: targetUser.employeeId,
+        email: targetUser.email,
+        name: targetUser.name,
+      };
+
+      await Promise.allSettled([
+        fetch('https://atendence-crm.vercel.app/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(extPayload),
+          signal: AbortSignal.timeout(5000),
+        }),
+        fetch('https://atendence-crm.vercel.app/api/attendance/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(extPayload),
+          signal: AbortSignal.timeout(5000),
+        }),
+      ]);
+      logger.info(`🌐 Synchronized remote logout to Attendance CRM for ${targetUser.name} (${targetUser.employeeId})`);
+    } catch (extLogoutErr: any) {
+      logger.warn('External attendance remote logout note:', extLogoutErr.message);
+    }
+
     logger.info(`🔒 Admin '${adminUser.name}' remotely logged out Employee '${targetUser.name}' (${targetUser.employeeId || targetUser._id})`);
 
     return {

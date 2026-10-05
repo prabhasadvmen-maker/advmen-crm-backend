@@ -246,14 +246,14 @@ export class AttendanceService {
         rawData = [];
       }
 
-      const users = await UserModel.find().lean();
+      const users = await UserModel.find({ organizationId: targetOrgId }).lean();
       let count = 0;
 
       for (const item of rawData) {
         if (!item) continue;
         const rawEmpId = String(item.empId || item.employeeId || '').trim();
         const empId = rawEmpId.toLowerCase() === 'undefined' || rawEmpId.toLowerCase() === 'null' ? '' : rawEmpId;
-        const empName = String(item.empName || item.name || 'Employee').trim();
+        const empName = String(item.empName || item.name || '').trim();
         const rawEmail = String(item.email || '').trim().toLowerCase();
         const email = rawEmail.toLowerCase() === 'undefined' || rawEmail.toLowerCase() === 'null' || rawEmail === 'n/a' ? '' : rawEmail;
 
@@ -278,26 +278,25 @@ export class AttendanceService {
           day: '2-digit',
         }).format(loginTime);
 
-        // Match existing user from database
+        // Match existing user strictly from organization's registered employees
         const matchedUser = users.find((u) =>
           (email && u.email && u.email.toLowerCase() === email) ||
           (empId && u.employeeId && u.employeeId.toUpperCase() === empId.toUpperCase()) ||
           (empName && u.name && u.name.toLowerCase() === empName.toLowerCase())
         );
 
-        const userId = matchedUser
-          ? matchedUser._id.toString()
-          : empId
-          ? `ext_${empId.toLowerCase()}`
-          : `ext_${empName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-        const userName = matchedUser ? matchedUser.name : empName;
-        const userEmail = matchedUser
-          ? matchedUser.email
-          : email || `${(empId || empName).toLowerCase().replace(/[^a-z0-9]/g, '')}@attendance.external`;
-        const userPhone = matchedUser?.phone || '';
-        const role = matchedUser?.role || 'SALES_REP';
-        const department = matchedUser?.department || 'Sales & Business Development';
-        const employeeId = matchedUser?.employeeId || empId || 'EMP-2026-0004';
+        if (!matchedUser) {
+          // Skip external records that do not belong to an active employee in this organization
+          continue;
+        }
+
+        const userId = matchedUser._id.toString();
+        const userName = matchedUser.name;
+        const userEmail = matchedUser.email;
+        const userPhone = matchedUser.phone || '';
+        const role = matchedUser.role || 'SALES_REP';
+        const department = matchedUser.department || 'Sales & Business Development';
+        const employeeId = matchedUser.employeeId || empId || 'EMP-0001';
 
         const statusRaw = String(item.status || 'Present').toUpperCase();
         const status: AttendanceStatus =
@@ -410,79 +409,6 @@ export class AttendanceService {
           });
           count++;
         }
-      }
-
-      // Also auto-normalize any raw attendance records in MongoDB that might be unassigned
-      const unassignedDocs = await AttendanceModel.collection.find({
-        $or: [
-          { organizationId: { $exists: false } },
-          { organizationId: null },
-          { date: { $exists: false } },
-          { date: null },
-        ],
-      }).toArray();
-
-      for (const unassigned of unassignedDocs) {
-        const uName = String(unassigned.empName || unassigned.name || 'abhi').trim();
-        const uEmail = String(unassigned.email || '').trim().toLowerCase();
-        const matched = users.find((u) =>
-          (uEmail && u.email && u.email.toLowerCase() === uEmail) ||
-          (uName && u.name && u.name.toLowerCase() === uName.toLowerCase())
-        );
-
-        const uTime = unassigned.createdAt ? new Date(unassigned.createdAt) : new Date();
-        const uDateStr = new Intl.DateTimeFormat('en-CA', {
-          timeZone: 'Asia/Kolkata',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-        }).format(uTime);
-
-        const uLogoutRaw = unassigned.punchOut || unassigned.logoutTime;
-        let uLogoutTime: Date | undefined = undefined;
-        if (uLogoutRaw) {
-          const pot = new Date(uLogoutRaw);
-          if (!isNaN(pot.getTime())) uLogoutTime = pot;
-        }
-
-        const uStatusRaw = String(unassigned.status || 'Present').toUpperCase();
-        const uStatus = uStatusRaw === 'LATE' ? 'LATE' : uStatusRaw === 'ON_LEAVE' ? 'ON_LEAVE' : uStatusRaw === 'HALF_DAY' ? 'HALF_DAY' : 'PRESENT';
-
-        let uSelfie = typeof unassigned.selfie === 'string' && unassigned.selfie.startsWith('data:image')
-          ? unassigned.selfie
-          : `https://atendence-crm.vercel.app/api/attendance/image/${unassigned._id.toString()}`;
-
-        await AttendanceModel.collection.updateOne(
-          { _id: unassigned._id },
-          {
-            $set: {
-              organizationId: targetOrgId,
-              userId: matched ? matched._id.toString() : `ext_${uName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
-              employeeId: matched?.employeeId || 'EMP-2026-0004',
-              userName: matched?.name || uName,
-              userEmail: matched?.email || (uEmail || 'abh@gmail.com'),
-              role: matched?.role || 'SALES_REP',
-              department: matched?.department || 'Sales & Business Development',
-              date: uDateStr,
-              loginTime: uTime,
-              lastActiveAt: uLogoutTime || uTime,
-              logoutTime: uLogoutTime || null,
-              status: uStatus,
-              selfieUrl: uSelfie,
-              source: 'EXTERNAL_ATTENDANCE_APP',
-              externalRecordId: unassigned._id.toString(),
-              loginEvents: [
-                {
-                  loginTime: uTime,
-                  logoutTime: uLogoutTime || null,
-                  ipAddress: 'Selfie + GPS',
-                  userAgent: 'Attendance CRM Web App',
-                },
-              ],
-            },
-          }
-        );
-        count++;
       }
 
       this.lastSyncTime = Date.now();
@@ -646,6 +572,39 @@ export class AttendanceService {
     record.logoutAdminName = adminName;
     await record.save();
 
+    // Notify external attendance CRM app if Admin punches out / logs out employee
+    if (logoutBy === 'ADMIN') {
+      try {
+        const targetUser = await UserModel.findById(userId).lean();
+        if (targetUser) {
+          const payload = JSON.stringify({
+            empId: targetUser.employeeId,
+            employeeId: targetUser.employeeId,
+            email: targetUser.email,
+            name: targetUser.name,
+            logoutBy: 'Admin',
+            actor: adminName || 'Admin',
+          });
+          Promise.allSettled([
+            fetch('https://atendence-crm.vercel.app/api/auth/logout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload,
+              signal: AbortSignal.timeout(5000),
+            }),
+            fetch('https://atendence-crm.vercel.app/api/attendance/logout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload,
+              signal: AbortSignal.timeout(5000),
+            }),
+          ]).catch(() => {});
+        }
+      } catch (err: any) {
+        logger.warn('External attendance logout notification note:', err.message);
+      }
+    }
+
     try {
       emitTenantEvent(organizationId, 'attendance:logout', {
         id: record._id.toString(),
@@ -671,6 +630,31 @@ export class AttendanceService {
 
     return record;
   }
+
+  /**
+   * Delete single attendance record by ID
+   */
+  async deleteAttendanceRecord(organizationId: string, recordId: string, isSuperAdmin: boolean = false): Promise<boolean> {
+    const query: Record<string, any> = { _id: recordId };
+    if (!isSuperAdmin) {
+      query.organizationId = organizationId;
+    }
+    const result = await AttendanceModel.deleteOne(query);
+    return result.deletedCount > 0;
+  }
+
+  /**
+   * Clears all attendance records
+   */
+  async clearAllAttendance(organizationId: string, isSuperAdmin: boolean = false): Promise<number> {
+    const query: Record<string, any> = {};
+    if (!isSuperAdmin) {
+      query.organizationId = organizationId;
+    }
+    const result = await AttendanceModel.deleteMany(query);
+    return result.deletedCount;
+  }
 }
 
 export const attendanceService = new AttendanceService();
+

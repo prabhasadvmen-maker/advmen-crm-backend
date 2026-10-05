@@ -9,6 +9,9 @@ export interface IAttendanceLoginEvent {
   logoutTime?: Date;
   logoutBy?: LogoutActor;
   logoutAdminName?: string;
+  reLoginTime?: Date;
+  awayDurationSeconds?: number;
+  awayDurationFormatted?: string;
   ipAddress?: string;
   userAgent?: string;
 }
@@ -28,6 +31,12 @@ export interface IAttendance extends Document {
   logoutTime?: Date;
   logoutBy?: LogoutActor;
   logoutAdminName?: string;
+  adminLogoutAt?: Date;
+  adminLogoutBy?: string;
+  adminLogoutReLoginAt?: Date;
+  totalAwayDurationSeconds?: number;
+  awayDurationFormatted?: string;
+  isAwayPending?: boolean;
   loginEvents: IAttendanceLoginEvent[];
   status: AttendanceStatus;
   selfieUrl?: string;
@@ -53,6 +62,9 @@ const AttendanceLoginEventSchema = new Schema<IAttendanceLoginEvent>(
     logoutTime: { type: Date },
     logoutBy: { type: String, enum: ['ADMIN', 'EMPLOYEE', 'SYSTEM'] },
     logoutAdminName: { type: String, trim: true },
+    reLoginTime: { type: Date },
+    awayDurationSeconds: { type: Number },
+    awayDurationFormatted: { type: String, trim: true },
     ipAddress: { type: String },
     userAgent: { type: String },
   },
@@ -124,6 +136,28 @@ const AttendanceSchema = new Schema<IAttendance>(
     logoutAdminName: {
       type: String,
       trim: true,
+    },
+    adminLogoutAt: {
+      type: Date,
+    },
+    adminLogoutBy: {
+      type: String,
+      trim: true,
+    },
+    adminLogoutReLoginAt: {
+      type: Date,
+    },
+    totalAwayDurationSeconds: {
+      type: Number,
+      default: 0,
+    },
+    awayDurationFormatted: {
+      type: String,
+      trim: true,
+    },
+    isAwayPending: {
+      type: Boolean,
+      default: false,
     },
     loginEvents: {
       type: [AttendanceLoginEventSchema],
