@@ -328,6 +328,22 @@ export class AttendanceService {
             item.logoutTime || item.punchOutTime
           );
 
+        // Skip invalid records: portal logout events have punchIn === punchOut or location 'Logged out from portal'
+        const locationAddress = String(item.location?.address || '').trim();
+        const isPortalLogoutRecord =
+          locationAddress.toLowerCase() === 'logged out from portal' ||
+          (item.location?.lat === 0 && item.location?.lng === 0 && !item.selfie && !item.imageUrl);
+
+        const loginMs = loginTime.getTime();
+        const logoutMs = logoutTime ? logoutTime.getTime() : null;
+        const isSameTimestamp = logoutMs !== null && Math.abs(logoutMs - loginMs) <= 1000; // within 1 second = same event
+
+        if (isPortalLogoutRecord || isSameTimestamp) {
+          // This is a logout-only event pushed from admin portal, not a real attendance punch
+          logger.info(`Skipping portal-logout record for ${empName} at ${loginTime.toISOString()}`);
+          continue;
+        }
+
         const dateStr = new Intl.DateTimeFormat('en-CA', {
           timeZone: 'Asia/Kolkata',
           year: 'numeric',
