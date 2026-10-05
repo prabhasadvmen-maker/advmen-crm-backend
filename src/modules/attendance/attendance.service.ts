@@ -268,10 +268,143 @@ export class AttendanceService {
 
   /**
    * Synchronize attendance records from external Attendance CRM app (atendence-crm.vercel.app)
+   * Handles both direct shared-MongoDB synchronization and HTTP REST API fallback.
    */
   async syncExternalAttendance(organizationId: string): Promise<{ syncedCount: number; message: string }> {
     try {
       const targetOrgId = organizationId || 'org_advmen_platform';
+      const users = await UserModel.find({ organizationId: targetOrgId }).lean();
+      let count = 0;
+
+      // 1. Direct shared-database sync from 'attendances' MongoDB collection
+      if (mongoose.connection?.db) {
+        try {
+          const rawExternalDocs = await mongoose.connection.db
+            .collection('attendances')
+            .find({
+              $or: [
+                { organizationId: { $exists: false } },
+                { organizationId: null },
+                { userId: { $exists: false } },
+                { userId: null },
+                { externalRecordId: { $exists: false } },
+              ],
+            })
+            .toArray();
+
+          for (const doc of rawExternalDocs) {
+            const rawEmpId = String(doc.empId || doc.employeeId || '').trim();
+            const rawEmpName = String(doc.empName || doc.userName || '').trim();
+            const rawEmail = String(doc.email || doc.userEmail || '').trim().toLowerCase();
+
+            // Skip portal logout dummy records
+            const locationAddress = String(doc.location?.address || '').trim();
+            const isPortalLogout = locationAddress.toLowerCase() === 'logged out from portal';
+            if (isPortalLogout && !doc.punchIn && !doc.loginTime) {
+              continue;
+            }
+
+            const matchedUser = users.find(
+              (u) =>
+                (rawEmail && u.email && u.email.toLowerCase() === rawEmail) ||
+                (rawEmpId && u.employeeId && u.employeeId.toUpperCase() === rawEmpId.toUpperCase()) ||
+                (rawEmpName && u.name && u.name.toLowerCase() === rawEmpName.toLowerCase())
+            );
+
+            if (!matchedUser) continue;
+
+            const punchInDate =
+              doc.punchIn instanceof Date
+                ? doc.punchIn
+                : doc.loginTime instanceof Date
+                ? doc.loginTime
+                : new Date(doc.punchIn || doc.createdAt || Date.now());
+
+            const punchOutDate =
+              doc.punchOut instanceof Date
+                ? doc.punchOut
+                : doc.logoutTime instanceof Date
+                ? doc.logoutTime
+                : doc.punchOut
+                ? new Date(doc.punchOut)
+                : undefined;
+
+            // If punchOut is within 3 seconds of punchIn, the user has NOT logged out yet (Active session!)
+            let finalLogout: Date | undefined = punchOutDate;
+            if (punchOutDate && punchInDate) {
+              const diffMs = Math.abs(punchOutDate.getTime() - punchInDate.getTime());
+              if (diffMs <= 3000) {
+                finalLogout = undefined;
+              }
+            }
+
+            const dateStr = new Intl.DateTimeFormat('en-CA', {
+              timeZone: 'Asia/Kolkata',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            }).format(punchInDate);
+
+            let selfieUrl: string | undefined = undefined;
+            if (typeof doc.selfie === 'string' && doc.selfie.trim()) {
+              selfieUrl = doc.selfie.trim();
+            } else if (typeof doc.imageUrl === 'string' && doc.imageUrl.trim()) {
+              selfieUrl = doc.imageUrl.startsWith('/')
+                ? `https://atendence-crm.vercel.app${doc.imageUrl}`
+                : doc.imageUrl;
+            }
+
+            const updateFields: any = {
+              organizationId: matchedUser.organizationId || targetOrgId,
+              userId: matchedUser._id.toString(),
+              employeeId: matchedUser.employeeId || rawEmpId,
+              userName: matchedUser.name,
+              userEmail: matchedUser.email,
+              userPhone: matchedUser.phone || '',
+              role: matchedUser.role || 'SALES_REP',
+              department: matchedUser.department || 'Sales & Business Development',
+              date: dateStr,
+              loginTime: punchInDate,
+              status: doc.status ? String(doc.status).toUpperCase() : 'PRESENT',
+              externalRecordId: doc._id.toString(),
+              source: 'EXTERNAL_ATTENDANCE_APP',
+              lastActiveAt: finalLogout || punchInDate,
+            };
+
+            const updateOp: any = { $set: updateFields };
+
+            if (finalLogout) {
+              updateFields.logoutTime = finalLogout;
+            } else {
+              updateOp.$unset = { logoutTime: 1 };
+            }
+
+            if (selfieUrl) {
+              updateFields.selfieUrl = selfieUrl;
+            } else {
+              updateOp.$unset = { ...(updateOp.$unset || {}), selfieUrl: 1 };
+            }
+
+            const loginEvent = {
+              loginTime: punchInDate,
+              logoutTime: finalLogout,
+              logoutBy: finalLogout ? 'EMPLOYEE' : undefined,
+              ipAddress: 'Selfie + GPS',
+              userAgent: doc.location?.address || 'Attendance CRM Web App',
+            };
+            updateFields.loginEvents = [loginEvent];
+
+            await mongoose.connection.db
+              .collection('attendances')
+              .updateOne({ _id: doc._id }, updateOp);
+            count++;
+          }
+        } catch (dbErr: any) {
+          logger.warn('Direct database attendance sync note:', dbErr.message);
+        }
+      }
+
+      // 2. HTTP sync from external endpoints as additional fallback
       const endpoints = [
         'https://atendence-crm.vercel.app/api/attendance/all',
         'https://atendence-crm.vercel.app/api/attendance/logs',
@@ -299,188 +432,191 @@ export class AttendanceService {
         }
       }
 
-      if (!rawData || !Array.isArray(rawData)) {
-        rawData = [];
-      }
+      if (rawData && Array.isArray(rawData)) {
+        for (const item of rawData) {
+          if (!item) continue;
+          const rawEmpId = String(item.empId || item.employeeId || '').trim();
+          const empId = rawEmpId.toLowerCase() === 'undefined' || rawEmpId.toLowerCase() === 'null' ? '' : rawEmpId;
+          const empName = String(item.empName || item.name || '').trim();
+          const rawEmail = String(item.email || '').trim().toLowerCase();
+          const email =
+            rawEmail.toLowerCase() === 'undefined' || rawEmail.toLowerCase() === 'null' || rawEmail === 'n/a'
+              ? ''
+              : rawEmail;
 
-      const users = await UserModel.find({ organizationId: targetOrgId }).lean();
-      let count = 0;
+          // Skip portal-only logout markers
+          const locationAddress = String(item.location?.address || '').trim();
+          const isPortalLogoutRecord =
+            locationAddress.toLowerCase() === 'logged out from portal' && !item.punchIn && !item.selfie;
 
-      for (const item of rawData) {
-        if (!item) continue;
-        const rawEmpId = String(item.empId || item.employeeId || '').trim();
-        const empId = rawEmpId.toLowerCase() === 'undefined' || rawEmpId.toLowerCase() === 'null' ? '' : rawEmpId;
-        const empName = String(item.empName || item.name || '').trim();
-        const rawEmail = String(item.email || '').trim().toLowerCase();
-        const email = rawEmail.toLowerCase() === 'undefined' || rawEmail.toLowerCase() === 'null' || rawEmail === 'n/a' ? '' : rawEmail;
+          if (isPortalLogoutRecord) {
+            continue;
+          }
 
-        const loginTime: Date =
-          parseExternalDateTime(
-            item.punchIn || item.timestamp || item.createdAt,
-            item.punchDate,
-            item.punchTime || item.loginTime || item.punchInTime
-          ) || new Date();
+          const loginTime: Date =
+            parseExternalDateTime(
+              item.punchIn || item.timestamp || item.createdAt,
+              item.punchDate,
+              item.punchTime || item.loginTime || item.punchInTime
+            ) || new Date();
 
-        const logoutTime: Date | undefined =
-          parseExternalDateTime(
+          let logoutTime: Date | undefined = parseExternalDateTime(
             item.punchOut,
             item.punchOutDate || item.punchDate,
             item.logoutTime || item.punchOutTime
           );
 
-        // Skip invalid records: portal logout events have punchIn === punchOut or location 'Logged out from portal'
-        const locationAddress = String(item.location?.address || '').trim();
-        const isPortalLogoutRecord =
-          locationAddress.toLowerCase() === 'logged out from portal' ||
-          (item.location?.lat === 0 && item.location?.lng === 0 && !item.selfie && !item.imageUrl);
-
-        const loginMs = loginTime.getTime();
-        const logoutMs = logoutTime ? logoutTime.getTime() : null;
-        const isSameTimestamp = logoutMs !== null && Math.abs(logoutMs - loginMs) <= 1000; // within 1 second = same event
-
-        if (isPortalLogoutRecord || isSameTimestamp) {
-          // This is a logout-only event pushed from admin portal, not a real attendance punch
-          logger.info(`Skipping portal-logout record for ${empName} at ${loginTime.toISOString()}`);
-          continue;
-        }
-
-        const dateStr = new Intl.DateTimeFormat('en-CA', {
-          timeZone: 'Asia/Kolkata',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-        }).format(loginTime);
-
-        // Match existing user strictly from organization's registered employees
-        const matchedUser = users.find((u) =>
-          (email && u.email && u.email.toLowerCase() === email) ||
-          (empId && u.employeeId && u.employeeId.toUpperCase() === empId.toUpperCase()) ||
-          (empName && u.name && u.name.toLowerCase() === empName.toLowerCase())
-        );
-
-        if (!matchedUser) {
-          // Skip external records that do not belong to an active employee in this organization
-          continue;
-        }
-
-        const userId = matchedUser._id.toString();
-        const userName = matchedUser.name;
-        const userEmail = matchedUser.email;
-        const userPhone = matchedUser.phone || '';
-        const role = matchedUser.role || 'SALES_REP';
-        const department = matchedUser.department || 'Sales & Business Development';
-        const employeeId = matchedUser.employeeId || empId || 'EMP-0001';
-
-        const statusRaw = String(item.status || 'Present').toUpperCase();
-        const status: AttendanceStatus =
-          statusRaw === 'LATE'
-            ? 'LATE'
-            : statusRaw === 'ON_LEAVE'
-            ? 'ON_LEAVE'
-            : statusRaw === 'HALF_DAY'
-            ? 'HALF_DAY'
-            : 'PRESENT';
-
-        let selfieUrl = String(item.selfie || item.imageUrl || '').trim();
-        if (selfieUrl) {
-          if (selfieUrl.startsWith('data:image')) {
-            // Keep direct base64 image data
-          } else if (selfieUrl.startsWith('/')) {
-            selfieUrl = `https://atendence-crm.vercel.app${selfieUrl}`;
-          } else if (selfieUrl.startsWith('http://atendence-crm.vercel.app')) {
-            selfieUrl = selfieUrl.replace('http://atendence-crm.vercel.app', 'https://atendence-crm.vercel.app');
+          // If logout is equal to login time (within 3 seconds), IT IS NOT A LOGOUT (Active session!)
+          if (logoutTime && loginTime) {
+            const diffMs = Math.abs(logoutTime.getTime() - loginTime.getTime());
+            if (diffMs <= 3000) {
+              logoutTime = undefined;
+            }
           }
-        }
-        if (!selfieUrl && item.recordId) {
-          selfieUrl = `https://atendence-crm.vercel.app/api/attendance/image/${item.recordId}`;
-        }
 
-        const location = {
-          address: item.location?.address || 'N/A',
-          lat: typeof item.location?.lat === 'number' ? item.location.lat : undefined,
-          lng: typeof item.location?.lng === 'number' ? item.location.lng : undefined,
-          accuracy: typeof item.location?.accuracy === 'number' ? item.location.accuracy : undefined,
-          googleMapsUrl:
-            item.location?.googleMapsUrl ||
-            (item.location?.lat && item.location?.lng
-              ? `https://www.google.com/maps?q=${item.location.lat},${item.location.lng}`
-              : undefined),
-        };
+          const dateStr = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Kolkata',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).format(loginTime);
 
-        const recordIdStr = String(item.recordId || item._id || '').trim();
-        const recordIdObj =
-          recordIdStr && mongoose.isValidObjectId(recordIdStr) ? new mongoose.Types.ObjectId(recordIdStr) : null;
+          // Match existing user strictly from organization's registered employees
+          const matchedUser = users.find(
+            (u) =>
+              (email && u.email && u.email.toLowerCase() === email) ||
+              (empId && u.employeeId && u.employeeId.toUpperCase() === empId.toUpperCase()) ||
+              (empName && u.name && u.name.toLowerCase() === empName.toLowerCase())
+          );
 
-        // Search for any existing attendance document that represents this record
-        const matchCriteria: any[] = [];
-        if (recordIdStr) matchCriteria.push({ externalRecordId: recordIdStr });
-        if (recordIdObj) matchCriteria.push({ _id: recordIdObj });
-        matchCriteria.push({ organizationId: targetOrgId, userId, date: dateStr });
-        if (empId) matchCriteria.push({ organizationId: targetOrgId, employeeId: empId, date: dateStr });
+          if (!matchedUser) {
+            continue;
+          }
 
-        const existingDoc = await AttendanceModel.findOne({ $or: matchCriteria });
+          const userId = matchedUser._id.toString();
+          const userName = matchedUser.name;
+          const userEmail = matchedUser.email;
+          const userPhone = matchedUser.phone || '';
+          const role = matchedUser.role || 'SALES_REP';
+          const department = matchedUser.department || 'Sales & Business Development';
+          const employeeId = matchedUser.employeeId || empId || 'EMP-0001';
 
-        const finalLogout = logoutTime || (existingDoc && existingDoc.logoutTime ? existingDoc.logoutTime : null);
+          const statusRaw = String(item.status || 'Present').toUpperCase();
+          const status: AttendanceStatus =
+            statusRaw === 'LATE'
+              ? 'LATE'
+              : statusRaw === 'ON_LEAVE'
+              ? 'ON_LEAVE'
+              : statusRaw === 'HALF_DAY'
+              ? 'HALF_DAY'
+              : 'PRESENT';
 
-        if (existingDoc) {
-          existingDoc.organizationId = targetOrgId;
-          existingDoc.userId = userId;
-          existingDoc.employeeId = employeeId;
-          existingDoc.userName = userName;
-          existingDoc.userEmail = userEmail;
-          existingDoc.userPhone = userPhone || existingDoc.userPhone;
-          existingDoc.role = role;
-          existingDoc.department = department;
-          existingDoc.date = dateStr;
-          existingDoc.loginTime = loginTime || existingDoc.loginTime;
-          existingDoc.lastActiveAt = finalLogout || existingDoc.lastActiveAt || loginTime;
-          existingDoc.logoutTime = finalLogout || undefined;
-          existingDoc.status = status;
-          if (selfieUrl) existingDoc.selfieUrl = selfieUrl;
-          if (location.address && location.address !== 'N/A') existingDoc.location = location;
-          existingDoc.source = 'EXTERNAL_ATTENDANCE_APP';
-          if (recordIdStr) existingDoc.externalRecordId = recordIdStr;
+          let selfieUrl = String(item.selfie || item.imageUrl || '').trim();
+          if (selfieUrl) {
+            if (selfieUrl.startsWith('data:image')) {
+              // Direct base64
+            } else if (selfieUrl.startsWith('/')) {
+              selfieUrl = `https://atendence-crm.vercel.app${selfieUrl}`;
+            } else if (selfieUrl.startsWith('http://atendence-crm.vercel.app')) {
+              selfieUrl = selfieUrl.replace('http://atendence-crm.vercel.app', 'https://atendence-crm.vercel.app');
+            }
+          } else {
+            // Keep empty so no fake SVG placeholder is rendered
+            selfieUrl = '';
+          }
 
-          existingDoc.loginEvents = [
-            {
-              loginTime: existingDoc.loginTime || loginTime,
-              logoutTime: finalLogout || undefined,
-              ipAddress: 'Selfie + GPS',
-              userAgent: location.address !== 'N/A' ? location.address : 'Attendance CRM Web App',
-            },
-          ];
+          const location = {
+            address: item.location?.address || 'N/A',
+            lat: typeof item.location?.lat === 'number' ? item.location.lat : undefined,
+            lng: typeof item.location?.lng === 'number' ? item.location.lng : undefined,
+            accuracy: typeof item.location?.accuracy === 'number' ? item.location.accuracy : undefined,
+            googleMapsUrl:
+              item.location?.googleMapsUrl ||
+              (item.location?.lat && item.location?.lng
+                ? `https://www.google.com/maps?q=${item.location.lat},${item.location.lng}`
+                : undefined),
+          };
 
-          await existingDoc.save();
-          count++;
-        } else {
-          await AttendanceModel.create({
-            organizationId: targetOrgId,
-            userId,
-            employeeId,
-            userName,
-            userEmail,
-            userPhone,
-            role,
-            department,
-            date: dateStr,
-            loginTime,
-            lastActiveAt: finalLogout || loginTime,
-            logoutTime: finalLogout || undefined,
-            status,
-            selfieUrl: selfieUrl || (recordIdStr ? `https://atendence-crm.vercel.app/api/attendance/image/${recordIdStr}` : ''),
-            location,
-            source: 'EXTERNAL_ATTENDANCE_APP',
-            externalRecordId: recordIdStr || undefined,
-            loginEvents: [
+          const recordIdStr = String(item.recordId || item._id || '').trim();
+          const recordIdObj =
+            recordIdStr && mongoose.isValidObjectId(recordIdStr) ? new mongoose.Types.ObjectId(recordIdStr) : null;
+
+          // Match strictly by distinct external record ID to preserve multiple punch sessions
+          const matchCriteria: any[] = [];
+          if (recordIdStr) matchCriteria.push({ externalRecordId: recordIdStr });
+          if (recordIdObj) matchCriteria.push({ _id: recordIdObj });
+
+          const existingDoc = matchCriteria.length > 0 ? await AttendanceModel.findOne({ $or: matchCriteria }) : null;
+
+          if (existingDoc) {
+            existingDoc.organizationId = targetOrgId;
+            existingDoc.userId = userId;
+            existingDoc.employeeId = employeeId;
+            existingDoc.userName = userName;
+            existingDoc.userEmail = userEmail;
+            existingDoc.userPhone = userPhone || existingDoc.userPhone;
+            existingDoc.role = role;
+            existingDoc.department = department;
+            existingDoc.date = dateStr;
+            existingDoc.loginTime = loginTime || existingDoc.loginTime;
+            existingDoc.lastActiveAt = logoutTime || existingDoc.lastActiveAt || loginTime;
+            if (logoutTime) {
+              existingDoc.logoutTime = logoutTime;
+            } else {
+              existingDoc.logoutTime = undefined as any;
+            }
+            existingDoc.status = status;
+            if (selfieUrl) {
+              existingDoc.selfieUrl = selfieUrl;
+            }
+            if (location.address && location.address !== 'N/A') existingDoc.location = location;
+            existingDoc.source = 'EXTERNAL_ATTENDANCE_APP';
+            if (recordIdStr) existingDoc.externalRecordId = recordIdStr;
+
+            existingDoc.loginEvents = [
               {
-                loginTime,
-                logoutTime: finalLogout || undefined,
+                loginTime: existingDoc.loginTime || loginTime,
+                logoutTime: logoutTime || undefined,
+                logoutBy: logoutTime ? 'EMPLOYEE' : undefined,
                 ipAddress: 'Selfie + GPS',
                 userAgent: location.address !== 'N/A' ? location.address : 'Attendance CRM Web App',
               },
-            ],
-          });
-          count++;
+            ];
+
+            await existingDoc.save();
+            count++;
+          } else if (matchCriteria.length > 0) {
+            await AttendanceModel.create({
+              _id: recordIdObj || undefined,
+              organizationId: targetOrgId,
+              userId,
+              employeeId,
+              userName,
+              userEmail,
+              userPhone,
+              role,
+              department,
+              date: dateStr,
+              loginTime,
+              lastActiveAt: logoutTime || loginTime,
+              logoutTime: logoutTime || undefined,
+              status,
+              selfieUrl: selfieUrl || undefined,
+              location,
+              source: 'EXTERNAL_ATTENDANCE_APP',
+              externalRecordId: recordIdStr || undefined,
+              loginEvents: [
+                {
+                  loginTime,
+                  logoutTime: logoutTime || undefined,
+                  logoutBy: logoutTime ? 'EMPLOYEE' : undefined,
+                  ipAddress: 'Selfie + GPS',
+                  userAgent: location.address !== 'N/A' ? location.address : 'Attendance CRM Web App',
+                },
+              ],
+            });
+            count++;
+          }
         }
       }
 
