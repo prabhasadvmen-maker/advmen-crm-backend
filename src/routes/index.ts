@@ -14,6 +14,7 @@ import { userRouter } from '../modules/users/user.routes.js';
 import { organizationRouter } from '../modules/organizations/organization.routes.js';
 import { attendanceRouter } from '../modules/attendance/attendance.routes.js';
 import { reportRouter } from '../modules/reports/report.routes.js';
+import { departmentRouter } from '../modules/departments/department.routes.js';
 
 export const apiRouter = Router();
 
@@ -30,6 +31,7 @@ apiRouter.get('/', (_req: Request, res: Response) => {
 // Domain Modules
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/users', userRouter);
+apiRouter.use('/departments', departmentRouter);
 apiRouter.use('/organizations', organizationRouter);
 apiRouter.use('/attendance', attendanceRouter);
 apiRouter.use('/leads', leadRouter);

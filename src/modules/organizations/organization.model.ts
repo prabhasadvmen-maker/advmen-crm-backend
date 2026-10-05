@@ -18,6 +18,7 @@ export interface IOrganization extends Document {
     leadResponseSlaMinutes: number;
     allowTelephonyRecording: boolean;
   };
+  departments: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -57,6 +58,20 @@ const OrganizationSchema = new Schema<IOrganization>(
       maxLeads: { type: Number, default: 1000 },
       maxStorageMb: { type: Number, default: 5120 },
       aiTokensIncluded: { type: Number, default: 50000 },
+    },
+    departments: {
+      type: [String],
+      default: [
+        'Sales',
+        'Intern',
+        'IT Department',
+        'SEO',
+        'Marketing',
+        'Operations',
+        'Customer Support',
+        'Finance & Accounts',
+        'Human Resources',
+      ],
     },
     settings: {
       timezone: { type: String, default: 'UTC' },
