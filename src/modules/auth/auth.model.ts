@@ -12,6 +12,7 @@ export interface IUser extends Document {
   permissions: PermissionKey[];
   avatarUrl?: string;
   department?: string;
+  designation?: string;
   phone?: string;
   employeeId?: string;
   empId?: string;
@@ -85,6 +86,10 @@ const UserSchema = new Schema<IUser>(
     department: {
       type: String,
       default: 'General Sales',
+      trim: true,
+    },
+    designation: {
+      type: String,
       trim: true,
     },
     phone: {

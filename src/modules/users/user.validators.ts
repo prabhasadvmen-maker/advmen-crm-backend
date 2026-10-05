@@ -5,7 +5,8 @@ export const CreateUserSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters').max(100),
   email: z.string().email('Invalid email address'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
-  role: z.enum(Object.values(USER_ROLES) as [string, ...string[]]).default(USER_ROLES.SALES_REP),
+  role: z.string().default(USER_ROLES.SALES_REP),
+  designation: z.string().optional(),
   department: z.string().optional(),
   phone: z.string().optional(),
   avatarUrl: z.string().url().optional().or(z.literal('')),
@@ -17,7 +18,8 @@ export type CreateUserOutput = z.output<typeof CreateUserSchema>;
 
 export const UpdateUserSchema = z.object({
   name: z.string().min(2).max(100).optional(),
-  role: z.enum(Object.values(USER_ROLES) as [string, ...string[]]).optional(),
+  role: z.string().optional(),
+  designation: z.string().optional(),
   department: z.string().optional(),
   phone: z.string().optional(),
   avatarUrl: z.string().url().optional().or(z.literal('')),
@@ -31,7 +33,7 @@ export const UserFilterQuerySchema = z.object({
   page: z.coerce.number().min(1).default(1),
   limit: z.coerce.number().min(1).max(100).default(50),
   search: z.string().optional(),
-  role: z.enum(Object.values(USER_ROLES) as [string, ...string[]]).optional(),
+  role: z.string().optional(),
   isActive: z.enum(['true', 'false']).optional(),
   organizationId: z.string().optional(),
 });

@@ -106,7 +106,10 @@ export class UserService {
     const passwordHash = await bcrypt.hash(input.password, salt);
 
     const role = (input.role as UserRole) || USER_ROLES.SALES_REP;
-    const permissions = ROLE_DEFAULT_PERMISSIONS[role] || [];
+    const permissions =
+      ROLE_DEFAULT_PERMISSIONS[role as keyof typeof ROLE_DEFAULT_PERMISSIONS] ||
+      ROLE_DEFAULT_PERMISSIONS[USER_ROLES.SALES_REP] ||
+      [];
     
     let employeeId: string | undefined = undefined;
     if (role !== USER_ROLES.SUPER_ADMIN) {
@@ -160,6 +163,7 @@ export class UserService {
           employeeId,
           empId: employeeId,
           role,
+          designation: input.designation?.trim() || undefined,
           permissions,
           department: input.department?.trim() || 'General Sales',
           phone: input.phone?.trim(),
@@ -292,9 +296,14 @@ export class UserService {
     if (input.avatarUrl !== undefined) updateData.avatarUrl = input.avatarUrl || undefined;
     if (input.isActive !== undefined) updateData.isActive = input.isActive;
 
+    if (input.designation !== undefined) (updateData as any).designation = input.designation.trim();
+
     if (input.role) {
       updateData.role = input.role as UserRole;
-      updateData.permissions = ROLE_DEFAULT_PERMISSIONS[input.role as UserRole] || existingUser.permissions;
+      updateData.permissions =
+        ROLE_DEFAULT_PERMISSIONS[input.role as UserRole] ||
+        ROLE_DEFAULT_PERMISSIONS[USER_ROLES.SALES_REP] ||
+        existingUser.permissions;
     }
 
     if (input.password) {

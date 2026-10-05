@@ -9,3 +9,5 @@ departmentRouter.use(authMiddleware, tenantMiddleware);
 
 departmentRouter.get('/', departmentController.getDepartments);
 departmentRouter.post('/', departmentController.addDepartment);
+departmentRouter.get('/roles', departmentController.getDepartmentRoles);
+departmentRouter.post('/roles', departmentController.addDepartmentRole);

@@ -19,6 +19,7 @@ export interface IOrganization extends Document {
     allowTelephonyRecording: boolean;
   };
   departments: string[];
+  departmentRoles?: Record<string, Array<{ role: string; label: string; description?: string }>>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -72,6 +73,10 @@ const OrganizationSchema = new Schema<IOrganization>(
         'Finance & Accounts',
         'Human Resources',
       ],
+    },
+    departmentRoles: {
+      type: Schema.Types.Mixed,
+      default: {},
     },
     settings: {
       timezone: { type: String, default: 'UTC' },
