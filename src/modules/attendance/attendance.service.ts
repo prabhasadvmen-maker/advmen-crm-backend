@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { AttendanceModel, IAttendance, AttendanceStatus } from './attendance.model.js';
 import { UserModel } from '../auth/auth.model.js';
-import { emitTenantEvent } from '../../config/socket.js';
+import { emitTenantEvent, emitUserEvent } from '../../config/socket.js';
 import { logger } from '../../shared/logger/logger.js';
 import { AppError } from '../../shared/errors/AppError.js';
 
@@ -89,6 +89,21 @@ function parseExternalDateTime(
   return undefined;
 }
 
+export function formatSecondsToDuration(totalSeconds: number): string {
+  const secs = Math.max(0, Math.floor(totalSeconds));
+  if (secs < 60) {
+    return `${secs}s`;
+  }
+  const mins = Math.floor(secs / 60);
+  const remainingSecs = secs % 60;
+  if (mins < 60) {
+    return remainingSecs > 0 ? `${mins}m ${remainingSecs}s` : `${mins}m`;
+  }
+  const hours = Math.floor(mins / 60);
+  const remainingMins = mins % 60;
+  return `${hours}h ${remainingMins}m ${remainingSecs}s`;
+}
+
 export class AttendanceService {
   /**
    * Helper to get current calendar date string in YYYY-MM-DD
@@ -128,32 +143,73 @@ export class AttendanceService {
       ipAddress: input.ipAddress,
       userAgent: input.userAgent,
     };
-    const update = {
-      $setOnInsert: {
-        ...attendanceQuery,
-        loginTime: now,
-        status,
-      },
-      $set: {
-        lastActiveAt: now,
-        employeeId: input.employeeId,
-        userName: input.name,
-        userEmail: input.email,
-        userPhone: input.phone || '',
-        role: input.role,
-        department: input.department || 'Sales & Business Development',
-        ...(input.ipAddress ? { ipAddress: input.ipAddress } : {}),
-        ...(input.userAgent ? { userAgent: input.userAgent } : {}),
-      },
-      $push: { loginEvents: loginEvent },
-    };
-    let record;
-    try {
-      record = await AttendanceModel.findOneAndUpdate(
-        attendanceQuery,
-        update,
-        { new: true, upsert: true, setDefaultsOnInsert: true }
-      );
+
+    let record: any = null;
+
+    // Check if employee has an active/pending Admin Logout to calculate away duration timer
+    const existing = await AttendanceModel.findOne(attendanceQuery);
+    if (existing) {
+      const lastEvent = existing.loginEvents && existing.loginEvents.length > 0
+        ? existing.loginEvents[existing.loginEvents.length - 1]
+        : null;
+
+      const adminLogoutTimestamp = existing.adminLogoutAt || (lastEvent?.logoutBy === 'ADMIN' ? lastEvent.logoutTime : null);
+
+      if (adminLogoutTimestamp && (existing.isAwayPending || (lastEvent && lastEvent.logoutBy === 'ADMIN' && !lastEvent.reLoginTime))) {
+        const awayDurationSec = Math.max(0, Math.round((now.getTime() - new Date(adminLogoutTimestamp).getTime()) / 1000));
+        const awayFormatted = formatSecondsToDuration(awayDurationSec);
+
+        if (lastEvent) {
+          lastEvent.reLoginTime = now;
+          lastEvent.awayDurationSeconds = awayDurationSec;
+          lastEvent.awayDurationFormatted = awayFormatted;
+        }
+
+        existing.adminLogoutReLoginAt = now;
+        existing.totalAwayDurationSeconds = (existing.totalAwayDurationSeconds || 0) + awayDurationSec;
+        existing.awayDurationFormatted = formatSecondsToDuration(existing.totalAwayDurationSeconds);
+        existing.isAwayPending = false;
+        existing.logoutTime = undefined as any; // Clear logout so employee is Active again
+        existing.logoutBy = undefined as any;
+        existing.logoutAdminName = undefined as any;
+        existing.lastActiveAt = now;
+        existing.loginEvents.push(loginEvent as any);
+        await existing.save();
+        record = existing;
+      }
+    }
+
+    if (!record) {
+      const update = {
+        $setOnInsert: {
+          ...attendanceQuery,
+          loginTime: now,
+          status,
+        },
+        $set: {
+          lastActiveAt: now,
+          employeeId: input.employeeId,
+          userName: input.name,
+          userEmail: input.email,
+          userPhone: input.phone || '',
+          role: input.role,
+          department: input.department || 'Sales & Business Development',
+          ...(input.ipAddress ? { ipAddress: input.ipAddress } : {}),
+          ...(input.userAgent ? { userAgent: input.userAgent } : {}),
+        },
+        $unset: {
+          logoutTime: 1,
+          logoutBy: 1,
+          logoutAdminName: 1,
+        },
+        $push: { loginEvents: loginEvent },
+      };
+      try {
+        record = await AttendanceModel.findOneAndUpdate(
+          attendanceQuery,
+          update,
+          { new: true, upsert: true, setDefaultsOnInsert: true }
+        );
     } catch (error) {
       if (!isDuplicateKeyError(error)) throw error;
       record = await AttendanceModel.findOneAndUpdate(
@@ -162,6 +218,7 @@ export class AttendanceService {
         { new: true }
       );
       if (!record) throw error;
+      }
     }
 
     if (!record) {
@@ -570,7 +627,32 @@ export class AttendanceService {
     record.logoutTime = now;
     record.logoutBy = logoutBy;
     record.logoutAdminName = adminName;
+    if (logoutBy === 'ADMIN') {
+      record.adminLogoutAt = now;
+      record.adminLogoutBy = adminName || 'Admin';
+      record.isAwayPending = true;
+    }
     await record.save();
+
+    if (logoutBy === 'ADMIN') {
+      try {
+        const { authRepository } = await import('../auth/auth.repository.js');
+        await authRepository.clearAllRefreshTokens(userId);
+      } catch (err: any) {
+        logger.warn('Token revocation note:', err.message);
+      }
+
+      emitTenantEvent(organizationId, 'auth:force-logout', {
+        userId: record.userId,
+        adminName: adminName || 'Admin',
+        logoutTime: now.toISOString(),
+      });
+      emitUserEvent(record.userId, 'auth:force-logout', {
+        userId: record.userId,
+        adminName: adminName || 'Admin',
+        logoutTime: now.toISOString(),
+      });
+    }
 
     // Notify external attendance CRM app if Admin punches out / logs out employee
     if (logoutBy === 'ADMIN') {
